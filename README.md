@@ -1,15 +1,18 @@
 # Lambholl's VapourSynth Functions
 
+## Requirements:
+* `dual_out.py` by YomikoR and RyougiKukoc. You can download [here](https://github.com/lpsub-114514/Encode-Tools/blob/main/dual_out.py)
+  
 ## Functions:
 * `encodeProcess` (decorator)
 * `down8d` copied from ksks and x_x
 * `rpChecker` Modified from lazybee
 * Producing...
-
+  
 #### encodeProcess
 Args: `sourceType='Web', ext='', encodeTypes=['CHS','CHT','HEVC'], subrender='libass', chapter=None, delFiles=False, rpc=True, `  
 `qaac_path = 'qaac64.exe', ffmpeg_path = 'ffmpeg', x264_path='x264.exe', x265_path='x265.exe', mp4box_path='MP4Box.exe', mkvmerge_path='mkvmerge.exe', eac3to_path='eac3to.exe', param_x264='"{0}" --demuxer y4m --preset veryslow --profile high --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 -o "{1}.mp4" -', param_x265='"{0}" --y4m -D 10 --preset slower --crf 18 -o "{1}.mp4" -'`  
-
+  
 e.g. 
 ```python
 @lamvsfunc.encodeProcess(encodeTypes=['JPSC','JPTC','HEVC'], delFiles=True, rpc=True)
@@ -20,7 +23,7 @@ def encodeVideo(source=''):
     last=zvs.bm3d(last,sigma=[2,1,1],sigma2=[0.8,0.5,0.5],radius=1,preset='np',vt=1,mode='cuda_rtc')
     # more produces
     return last
-
+  
 if __name__ == '__main__':
     videos = getSources()
     for i in videos:
