@@ -6,6 +6,7 @@ import dual_out, subprocess, os, gc, sys
 Functions:
 down8d
 encodeProcess
+rpChecker
 '''
 
 
