@@ -7,11 +7,12 @@
 * Producing...
 
 #### encodeProcess
-Args: `sourceType='Web', ext='', encodeTypes=['CHS','CHT','HEVC'], subrender='libass', chapter=None, delFiles=False, rpc=True, qaac_path = 'qaac64.exe', ffmpeg_path = 'ffmpeg', x264_path='x264.exe', x265_path='x265.exe', mp4box_path='MP4Box.exe', mkvmerge_path='mkvmerge.exe', eac3to_path='eac3to.exe', param_x264='"{0}" --demuxer y4m --preset veryslow --profile high --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 -o "{1}.mp4" -', param_x265='"{0}" --y4m -D 10 --preset slower --crf 18 -o "{1}.mp4" -'`  
+Args: `sourceType='Web', ext='', encodeTypes=['CHS','CHT','HEVC'], subrender='libass', chapter=None, delFiles=False, rpc=True, `  
+`qaac_path = 'qaac64.exe', ffmpeg_path = 'ffmpeg', x264_path='x264.exe', x265_path='x265.exe', mp4box_path='MP4Box.exe', mkvmerge_path='mkvmerge.exe', eac3to_path='eac3to.exe', param_x264='"{0}" --demuxer y4m --preset veryslow --profile high --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 -o "{1}.mp4" -', param_x265='"{0}" --y4m -D 10 --preset slower --crf 18 -o "{1}.mp4" -'`  
 
 e.g. 
 ```python
-@lamvsfunc.encodeProcess(encodeTypes=['JPSC','JPTC','HEVC'], delFiles=True
+@lamvsfunc.encodeProcess(encodeTypes=['JPSC','JPTC','HEVC'], delFiles=True, rpc=True)
 def encodeVideo(source=''):
     src=core.lsmas.LWLibavSource(source).fmtc.bitdepth(bits=16,dmode=1)
     last=src
