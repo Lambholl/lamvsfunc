@@ -4,11 +4,22 @@ import dual_out, subprocess, os, gc, sys
 
 '''
 Functions:
+getSources
 down8d
 encodeProcess
 rpChecker
 '''
 
+# Get a list of file
+# Drag files into cmd window and enter to add. Enter an empty line to end adding. 
+def getSources():
+    result = []
+    while True:
+        inText = input('> ')
+        if inText == '':
+            return result
+        else:
+            result.append(inText.replace('\"',''))
 
 # Down8 with dmode8 (Copied from ksks and x_x.)
 def down8d(clip):
