@@ -4,11 +4,12 @@
 * `dual_out.py` by YomikoR and RyougiKukoc. You can download [here](https://github.com/lpsub-114514/Encode-Tools/blob/main/dual_out.py)
   
 ## Functions:
-* `encodeProcess` (decorator)
-* `down8d` copied from ksks and x_x
-* `getSources`
-* `rpChecker` Modified from lazybee
-* Producing...
+* `encodeProcess` (decorator)  
+* `down8d` copied from ksks and x_x  
+* `getSources`  
+* `rpChecker` Modified from lazybee  
+* Producing...  
+> 中文版说明在[这里](https://bbs.acgrip.com/thread-12172-1-1.html)
 
 #### getSources
 Get a list of file. Drag files into cmd window and enter to add. Enter an empty line to end adding.  
@@ -35,7 +36,7 @@ def encodeVideo(source=''):
     return last
   
 if __name__ == '__main__':
-    videos = getSources()
+    videos = lamvs.getSources()
     for i in videos:
         encodeVideo(i)
 ```
