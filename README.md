@@ -1,2 +1,5 @@
-# lamvsfunc
-Lambholl's VapourSynth Func
+# Lambholl's VapourSynth Functions
+
+## Functions:
+* `encodeProcess` (decorator)
+* Producing...
