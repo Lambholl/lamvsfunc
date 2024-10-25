@@ -12,8 +12,7 @@
 > 中文版说明在[这里](https://bbs.acgrip.com/thread-12172-1-1.html)
 
 #### getSources
-Get a list of file. Drag files into cmd window and enter to add. Enter an empty line to end adding.  
-得到一个文件名列表，将需要压制的片源文件依次拖拽进窗口回车，一行对应一个文件，输入空行以结束  
+Get a list of file. Drag files into cmd window and enter to add. Enter an empty line to end adding. 
 
 #### encodeProcess
 Args: `sourceType='Web', ext='', encodeTypes=['CHS','CHT','HEVC'], subrender='libass', chapter=None, delFiles=False, rpc=True, `  
