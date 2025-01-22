@@ -116,7 +116,7 @@ def encodeProcess(sourceType='Web', ext='', encodeTypes=['CHS','CHT','HEVC'], su
 # RPChecker (Modified from lazybee)
 def rpChecker(source, ripped, subtitle='', message="rip", output='rpc.txt', subrender=core.assrender.TextSub):
     if type(source)==str:
-        src = core.lsmas.LWLibavSource(source)[:100]
+        src = core.lsmas.LWLibavSource(source)
     elif type(source)==vs.VideoNode:
         src = source
     else:
