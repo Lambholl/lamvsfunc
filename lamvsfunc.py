@@ -53,14 +53,20 @@ def encodeProcess(sourceType='Web', ext='', encodeTypes=['CHS','CHT','HEVC'], su
         def wrapper(*args, **kw):
             source=args[0]
             if source[-len(extSource):] != extSource:
-                raise TypeError('Source file extention doesn\'t match. It should have been '+extSource)
+                raise FileNotFoundError('Source file extention doesn\'t match. It should have been '+extSource)
             file2del = []
             if sourceType == 'Web':
                 subprocess.run([ffmpeg_path, '-i', source, '-c:a', 'copy', '-vn', source[:-len(extSource)]+'.m4a'], shell=True)
+                if not os.path.exists(source[:-len(extSource)]+'.m4a'):
+                    raise FileNotFoundError(f"Failed to create {source[:-len(extSource)]+'.m4a'}")
                 file2del.append(source[:-len(extSource)]+'.m4a')
             elif sourceType == 'BD':
                 subprocess.run([eac3to_path, source, source[:-len(extSource)]+'.flac'], shell=True)
+                if not os.path.exists(source[:-len(extSource)]+'.flac'):
+                    raise FileNotFoundError(f"Failed to create {source[:-len(extSource)]+'.flac'}")
                 subprocess.run([ffmpeg_path, '-i', source, '-f', 'wav', '-vn', '-', '|', qaac_path, '-V', '127', '-', '-o', source[:-len(extSource)]+'.m4a'], shell=True)
+                if not os.path.exists(source[:-len(extSource)]+'.m4a'):
+                    raise FileNotFoundError(f"Failed to create {source[:-len(extSource)]+'.m4a'}")
                 file2del.append(source[:-len(extSource)]+'.flac')
                 file2del.append(source[:-len(extSource)]+'.m4a')
             last = func(*args, **kw)
@@ -70,22 +76,29 @@ def encodeProcess(sourceType='Web', ext='', encodeTypes=['CHS','CHT','HEVC'], su
                 encodeParams.append([])
                 if encodeTypes[i]=='HEVC':
                     extAudio = {'Web':'.m4a', 'BD':'.flac'}[sourceType]
-                    encodeParams[i] = [last.fmtc.bitdepth(bits=10,dmode=8,patsize=64), 
-                            param_x265.format(x265_path, source[:-len(extSource)]+'.mute'), 
-                            [mkvmerge_path, '--output', source[:-len(extSource)]+'.hevc.mkv',
+                    encodeParams[i] = [
+                        last.fmtc.bitdepth(bits=10,dmode=8,patsize=64), 
+                        param_x265.format(x265_path, source[:-len(extSource)]+'.mute'), 
+                        [mkvmerge_path, '--output', source[:-len(extSource)]+'.hevc.mkv',
                             '--language', '0:und', '--default-track', '0:yes', source[:-len(extSource)]+'.mute.mp4',
                             '--language', '0:jpn', '--default-track', '0:yes', source[:-len(extSource)]+extAudio], 
-                            source[:-len(extSource)]+'.hevc.mkv', '']
+                        source[:-len(extSource)]+'.hevc.mkv',
+                        '',
+                    ]
                     if chapter:
                         encodeParams[i][2] += ['--chapter-language', 'en', '--chapters', source[:-len(extSource)]+'.txt']
                     file2del.append(source[:-len(extSource)]+'.mute.mp4')
                 else:
                     verName = {'CHS':'sc', 'CHT':'tc', 'JPSC':'jpsc', 'JPTC': 'jptc'}[encodeTypes[i]]
                     if not os.path.isfile(source[:-len(extSource)]+f'.{verName}.ass'):
-                        raise TypeError('Your subtitle files are not ready yet!\nMiss '+source[:-len(extSource)]+f'.{verName}.ass')
-                    encodeParams[i] = [sub(last2, source[:-len(extSource)]+f'.{verName}.ass'), 
-                            param_x264.format(x264_path, source[:-len(extSource)]+f'.mute.{verName}'), 
-                            [mp4box_path, '-add', source[:-len(extSource)]+f'.mute.{verName}.mp4', '-add', source[:-len(extSource)]+'.m4a', '-new', source[:-len(extSource)]+f'.{verName}.mp4'], source[:-len(extSource)]+f'.{verName}.mp4', source[:-len(extSource)]+f'.{verName}.ass']
+                        raise FileNotFoundError('Your subtitle files are not ready yet!\nMiss '+source[:-len(extSource)]+f'.{verName}.ass')
+                    encodeParams[i] = [
+                        sub(last2, source[:-len(extSource)]+f'.{verName}.ass'), 
+                        param_x264.format(x264_path, source[:-len(extSource)]+f'.mute.{verName}'), 
+                        [mp4box_path, '-add', source[:-len(extSource)]+f'.mute.{verName}.mp4', '-add', source[:-len(extSource)]+'.m4a', '-new', source[:-len(extSource)]+f'.{verName}.mp4'],
+                        source[:-len(extSource)]+f'.{verName}.mp4',
+                        source[:-len(extSource)]+f'.{verName}.ass',
+                    ]
                     if chapter:
                         encodeParams[i][2] = encodeParams[i][2][:-2] + ['-chap', source[:-len(extSource)]+'.txt'] + encodeParams[i][2][-2:]
                     file2del.append(source[:-len(extSource)]+f'.mute.{verName}.mp4')
@@ -100,7 +113,10 @@ def encodeProcess(sourceType='Web', ext='', encodeTypes=['CHS','CHT','HEVC'], su
             for i in range(len(encodes)):
                 encodes[i].wait()
             for i in encodeParams:
-                    subprocess.run(i[2], shell=True)
+                subprocess.run(i[2], shell=True)
+                if not os.path.exists(i[3]):
+                    raise FileNotFoundError(f"Failed to create {i[3]}")
+            
             if delFiles:
                 for i in file2del:
                     os.remove(i)
