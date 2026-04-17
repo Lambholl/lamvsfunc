@@ -55,32 +55,17 @@ def subsetFonts(sub_paths, fonts_dir, font_out_dir, assfontsubset_path="AssFontS
     ]
     
     try:
-        subprocess.run(
-            cmd, check=True, input='\n', 
-            capture_output=True, text=True, 
-            encoding='utf-8', errors='ignore'
-        )
+        subprocess.run(cmd, check=True, capture_output=True, text=True, encoding='utf-8')
         print(f"  -> Fonts subsetting complete. Saved to: {font_out_dir}")
         
-    except subprocess.CalledProcessError as e:
-        valid_exts = ('.ttf', '.ttc', '.otf', '.woff', '.woff2')
-        files_generated = any(
-            f.lower().endswith(valid_exts) for f in os.listdir(font_out_dir)
-        ) if os.path.exists(font_out_dir) else False
-        
+    except subprocess.CalledProcessError as e:        
         combined_output = f"{e.stdout or ''}\n{e.stderr or ''}"
         err_lines = [line for line in combined_output.splitlines() if "|ERR|" in line]
         
-        if files_generated:
-            print("  -> Fonts subsetting complete (bypassed exit prompt).")
-            if err_lines:
-                for err in err_lines:
-                    print(f"     {err}")
-        else:
-            print(f"  -> Font subsetting failed. Exit code: {e.returncode}")
-            for line in err_lines:
-                print(f"     {line}")
-            raise RuntimeError("Font subsetting failed. Aborting encode.")
+        print(f"  -> Font subsetting failed. Exit code: {e.returncode}")
+        for line in err_lines:
+            print(f"     {line}")
+        raise RuntimeError("Font subsetting failed. Aborting encode.")
             
     except FileNotFoundError:
         print(f"  -> Error: {assfontsubset_path} not found in PATH.")
