@@ -166,18 +166,15 @@ def encodeProcess(sourceType='Web', ext='', encodeTypes=['CHS','CHT','HEVC'], su
                     else:
                         output_mkv = source[:-len(extSource)]+'.hevc.mkv'
                     
-                    # --- END: Build advanced Mux Command ---
                     mux_cmd = [mkvmerge_path, '--output', output_mkv]
                     if video_title and subtitles_info:
                         mux_cmd.extend(['--title', video_title.format(base_in_name)])
                         
-                    # Add base video & audio tracks
                     mux_cmd.extend([
                         '--language', '0:und', '--default-track', '0:yes', mute_video,
                         '--language', '0:jpn', '--default-track', '0:yes', source[:-len(extSource)]+extAudio
                     ])
 
-                    # Add subtitles & fonts if config provided
                     if subtitles_info:
                         for sub_cfg in subtitles_info:
                             sub_file_path = source[:-len(extSource)] + f'.{sub_cfg.get("type")}.ass'
@@ -201,7 +198,6 @@ def encodeProcess(sourceType='Web', ext='', encodeTypes=['CHS','CHT','HEVC'], su
                     
                     if chapter:
                         mux_cmd.extend(['--chapter-language', 'en', '--chapters', source[:-len(extSource)]+'.txt'])
-                    # ---------------------------------------
 
                     encodeParams[i] = [
                         last.fmtc.bitdepth(bits=10,dmode=8,patsize=64), 
@@ -336,29 +332,24 @@ def makeTorrent(mktorrent_path, video_file, trackers_list=None, is_private=False
     else:                                # > 8 GiB, use 16 MiB
         piece_size = "24"
     
-    # 1. Use basenames to avoid Windows absolute path mangling
     working_dir = os.path.dirname(video_file) or '.'
     video_basename = os.path.basename(video_file)
     output_basename = video_basename + ".torrent"
     output_torrent_full = video_file + ".torrent"
 
-    # mktorrent syntax: mktorrent [options] <target>
     cmd = [mktorrent_path, "-o", output_basename, "-l", piece_size]
     
     if is_private:
         cmd.append("-p")
         
-    # 2. Join trackers with commas for a single -a string
     if trackers_list and isinstance(trackers_list, list):
         cmd.extend(["-a", ",".join(trackers_list)])
     else:
         print("  -> Warning: No trackers provided. Creating trackerless torrent.")
         
-    # Append the target file at the end
     cmd.append(video_basename)
 
     try:
-        # 3. Execute inside the target directory using cwd
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, cwd=working_dir)
         print(f"  -> Success. Torrent saved to: {output_torrent_full}")
     except subprocess.CalledProcessError as e:
