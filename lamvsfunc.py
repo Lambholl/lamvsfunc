@@ -214,7 +214,7 @@ def encodeProcess(
     create_torrent=False,
     trackers: None|list[int]=None,
     log_file: None|str=None,
-    audio_language='und',
+    audio_language='jpn',
     qaac_quality=127,
     bd_audio_track=2,
     cut_audio_copy=False,
