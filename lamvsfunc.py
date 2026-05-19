@@ -92,7 +92,7 @@ def encodeProcess(
     encodeTypes: None|list[str]=['CHS', 'CHT', 'HEVC'],
     subrender='libass',
     chapter=None,
-    delFiles=False,
+    delFiles=True,
     rpc=True,
     fonts_dir: None|str=None,
     font_out_dir: None|str=None,
@@ -141,9 +141,10 @@ def encodeProcess(
     }[sourceType] if chapter == None else chapter
     
     if clip_frames:
+        if any(t != 'HEVC' for t in encodeTypes):
+            raise ValueError("clip_frames mode only supports encodeTypes=['HEVC']; subtitle-burning types are disallowed because src subtitles can't be sliced losslessly here.")
         chapter = False
         create_torrent = False
-        rpc = False # 之后可能可以实现
 
     # 音频切割
     def cut_audio(src_audio, out_audio, start_sec, end_sec, is_lossless, ffmpeg_path, qaac_path):
@@ -217,6 +218,7 @@ def encodeProcess(
                     source[:-len(extSource)] + '.txt'
                 ])
             params = {
+                'encode_type': encode_type,
                 'video': video_clip,
                 'encode_cmd': param_x265.format(x265_path, mute_video),
                 'mux_cmd': mux_cmd,
@@ -239,6 +241,7 @@ def encodeProcess(
             if chapter and not is_clip:
                 mux_cmd = mux_cmd[:-2] + ['-chap', source[:-len(extSource)] + '.txt'] + mux_cmd[-2:]
             params = {
+                'encode_type': encode_type,
                 'video': video_clip,
                 'encode_cmd': param_x264.format(x264_path, mute_mp4[:-4]),
                 'mux_cmd': mux_cmd,
@@ -328,6 +331,8 @@ def encodeProcess(
                                 out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
                                 False, subtitles_info, resolved_font_out_dir, video_title, subrender, verName, True, seg_idx
                             )
+                        params['frame_range'] = (start, end)
+                        params['seg_idx'] = seg_idx
                         encodeParamsList.append(params)
             else:
                 # 整体处理
@@ -371,7 +376,14 @@ def encodeProcess(
                         os.remove(f)
             if rpc:
                 for params in encodeParamsList:
-                    rpChecker(source, params['output'], subtitle=params['subtitle'], subrender=sub, message=params.get('subtitle',''), output=params['output'] + '.rpc.txt')
+                    src_arg = source
+                    if params.get('frame_range'):
+                        s, e = params['frame_range']
+                        src_arg = core.lsmas.LWLibavSource(source)[s:e]
+                    msg = params['encode_type']
+                    if params.get('seg_idx') is not None:
+                        msg = f"{msg} seg{params['seg_idx']}"
+                    rpChecker(src_arg, params['output'], subtitle=params['subtitle'], subrender=sub, message=msg, output=params['output'] + '.rpc.txt')
             if create_torrent:
                 for params in encodeParamsList:
                     makeTorrent(mktorrent_path, params['output'], trackers)
