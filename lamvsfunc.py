@@ -1,6 +1,6 @@
 import vapoursynth as vs
 from vapoursynth import core
-import dual_out, subprocess, os, gc, sys, threading
+import dual_out, subprocess, os, gc, sys, threading, re
 '''
 Functions:
 getSources
@@ -10,6 +10,29 @@ rpChecker
 getMimeType
 subsetFonts
 '''
+
+
+_ANSI_RE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+_BARE_CR_RE = re.compile(r'\r(?!\n)')
+
+
+def _normalize_for_log(text):
+    """Strip ANSI escapes and turn bare \\r into \\n so progress-bar output is readable in the log."""
+    return _BARE_CR_RE.sub('\n', _ANSI_RE.sub('', text))
+
+
+class _LogStream:
+    """File-like wrapper that normalizes ANSI/CR before writing to the underlying log."""
+    def __init__(self, fh):
+        self.fh = fh
+    def write(self, data):
+        if not data:
+            return 0
+        self.fh.write(_normalize_for_log(data))
+        self.fh.flush()
+        return len(data)
+    def flush(self):
+        self.fh.flush()
 
 
 class _Tee:
@@ -55,12 +78,18 @@ def _tee_pipe(pipe, *writers):
                 pass
 
 
+def _as_log_stream(log_fh):
+    if log_fh is None or isinstance(log_fh, _LogStream):
+        return log_fh
+    return _LogStream(log_fh)
+
+
 def _log_run(cmd, log_fh, **kw):
     """subprocess.run wrapper that tees stdout+stderr to console and log when log_fh is set."""
     if log_fh is None:
         return subprocess.run(cmd, **kw)
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw)
-    _tee_pipe(p.stdout, sys.__stdout__, log_fh)
+    _tee_pipe(p.stdout, sys.__stdout__, _as_log_stream(log_fh))
     p.wait()
     return p
 
@@ -73,7 +102,7 @@ def _log_popen(cmd, log_fh, **kw):
     kw['stdout'] = subprocess.PIPE
     kw.setdefault('stderr', subprocess.STDOUT)
     p = subprocess.Popen(cmd, **kw)
-    t = threading.Thread(target=_tee_pipe, args=(p.stdout, sys.__stdout__, log_fh), daemon=True)
+    t = threading.Thread(target=_tee_pipe, args=(p.stdout, sys.__stdout__, _as_log_stream(log_fh)), daemon=True)
     t.start()
     p._log_thread = t
     return p
@@ -345,7 +374,7 @@ def encodeProcess(
             log_fh = open(log_file, 'a', encoding='utf-8', buffering=1) if log_file else None
             _saved_stdout = sys.stdout
             if log_fh:
-                sys.stdout = _Tee(_saved_stdout, log_fh)
+                sys.stdout = _Tee(_saved_stdout, _LogStream(log_fh))
             source = args[0]
             if not source.endswith(extSource):
                 raise FileNotFoundError(f'Source file extention doesn\'t match. It should have been {extSource}')
@@ -398,7 +427,7 @@ def encodeProcess(
                     )
                     ffmpeg_proc.stdout.close()
                     if log_fh:
-                        _tee_thread = threading.Thread(target=_tee_pipe, args=(ffmpeg_proc.stderr, sys.__stdout__, log_fh), daemon=True)
+                        _tee_thread = threading.Thread(target=_tee_pipe, args=(ffmpeg_proc.stderr, sys.__stdout__, _as_log_stream(log_fh)), daemon=True)
                         _tee_thread.start()
                     qaac_proc.communicate() if not log_fh else qaac_proc.wait()
                     ffmpeg_proc.wait()
@@ -576,10 +605,8 @@ def rpChecker(source,
             PSNR_V = cmp_planes[2].get_frame(i).props.PlanePSNR
 
             if (i % 100 == 0):
-                output_blank = " " * 50
-                sys.stdout.write(f"\r{output_blank}")
                 sys.stdout.write(
-                    f"\rProcessing frame {i}/{total_frames}: Y-{round(PSNR_Y)} U-{round(PSNR_U)} V-{round(PSNR_V)}"
+                    f"\rProcessing frame {i}/{total_frames}: Y-{round(PSNR_Y)} U-{round(PSNR_U)} V-{round(PSNR_V)}     "
                 )
 
             if (PSNR_Y < 30) | (PSNR_U < 40) | (PSNR_V < 40):
@@ -595,13 +622,9 @@ def rpChecker(source,
             out_file.close()
 
     if broken_frame:
-        print(
-            f"\n\033[;31mRP Checker complete for {message}, broken frame found, please check output file!!!\033[0m"
-        )
+        print(f"\nRP Checker complete for {message}, broken frame found, please check output file!!!")
     else:
-        print(
-            f"\n\033[;32mRP Checker complete for {message}, no broken frame found\033[0m"
-        )
+        print(f"\nRP Checker complete for {message}, no broken frame found")
 
 
 def makeTorrent(mktorrent_path,
