@@ -214,8 +214,9 @@ def encodeProcess(
     create_torrent=False,
     trackers: None|list[int]=None,
     log_file: None|str=None,
+    audio_language='und',
     param_x264='"{0}" --demuxer y4m --preset veryslow --profile high --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 -o "{1}.mp4" -',
-    param_x265='"{0}" --y4m -D 10 --preset slower --crf 18 -o "{1}.mp4" -'
+    param_x265='"{0}" --y4m -D 10 --preset slower --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 --range limited -o "{1}.mp4" -'
 ):
     """
     Decorator while encoding
@@ -304,7 +305,7 @@ def encodeProcess(
                 mux_cmd.extend(['--title',  video_title.format(base_in_name)])
             mux_cmd.extend([
                 '--language', '0:und', '--default-track', '0:yes',
-                mute_video+'.mp4', '--language', '0:jpn', '--default-track',
+                mute_video+'.mp4', '--language', f'0:{audio_language}', '--default-track',
                 '0:yes', audio_file
             ])
             # 字幕和字体（仅非分段）
@@ -402,12 +403,14 @@ def encodeProcess(
                 subsetFonts(subtitle_paths, resolved_fonts_dir, resolved_font_out_dir, assfontsubset_path)
             file2del = []
             # 抽取音频
+            flac_audio = None  # used by HEVC outputs
+            m4a_audio = None   # used by 264 outputs and by Web HEVC
             if sourceType == 'Web':
-                _log_run([ffmpeg_path, '-i', source, '-c:a', 'copy', '-vn', source[:-len(extSource)] + '.m4a'], log_fh, check=True)
-                if not os.path.exists(source[:-len(extSource)] + '.m4a'):
-                    raise FileNotFoundError(f"Failed to create {source[:-len(extSource)]+'.m4a'}")
-                file2del.append(source[:-len(extSource)] + '.m4a')
-                src_audio_file = source[:-len(extSource)] + '.m4a'
+                m4a_audio = source[:-len(extSource)] + '.m4a'
+                _log_run([ffmpeg_path, '-i', source, '-c:a', 'copy', '-vn', m4a_audio], log_fh, check=True)
+                if not os.path.exists(m4a_audio):
+                    raise FileNotFoundError(f"Failed to create {m4a_audio}")
+                file2del.append(m4a_audio)
             elif sourceType == 'BD':
                 flac_path = source[:-len(extSource)] + '.flac'
                 m4a_path = source[:-len(extSource)] + '.m4a'
@@ -418,6 +421,7 @@ def encodeProcess(
                     if not os.path.exists(flac_path):
                         raise FileNotFoundError(f"Failed to create {flac_path}")
                     file2del.append(flac_path)
+                    flac_audio = flac_path
                 if has_264:
                     # ffmpeg stdout -> qaac stdin; ffmpeg stderr is what we want to log
                     ffmpeg_proc = subprocess.Popen(
@@ -447,7 +451,15 @@ def encodeProcess(
                     if not os.path.exists(m4a_path):
                         raise FileNotFoundError(f"Failed to create {m4a_path}")
                     file2del.append(m4a_path)
-                src_audio_file = flac_path if has_hevc else m4a_path
+                    m4a_audio = m4a_path
+            # For clip mode (HEVC-only by validation) the segment cut input is always flac.
+            src_audio_file = flac_audio if flac_audio else m4a_audio
+
+            def audio_for(encode_type):
+                """Pick the audio file appropriate to a given encode type."""
+                if encode_type == 'HEVC' and flac_audio:
+                    return flac_audio
+                return m4a_audio
             last: vs.VideoNode = func(*args, **kw)
             last2 = down8d(last)
             encodeParamsList = []
@@ -498,10 +510,11 @@ def encodeProcess(
             else:
                 # 整体处理
                 for encode_type in encodeTypes:
+                    audio_path = audio_for(encode_type)
                     if encode_type == 'HEVC':
                         video_clip = last.fmtc.bitdepth(bits=10, dmode=8, patsize=64)
                         params = build_encode_params(
-                            encode_type, video_clip, src_audio_file, source, extSource, base_in_name, source_dir,
+                            encode_type, video_clip, audio_path, source, extSource, base_in_name, source_dir,
                             out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
                             chapter, subtitles_info, resolved_font_out_dir, video_title, subrender
                         )
@@ -511,7 +524,7 @@ def encodeProcess(
                             raise FileNotFoundError('Your subtitle files are not ready yet!\nMissing ' + source[:-len(extSource)] + f'.{verName}.ass')
                         video_clip = sub(last2, source[:-len(extSource)] + f'.{verName}.ass')
                         params = build_encode_params(
-                            encode_type, video_clip, src_audio_file, source, extSource, base_in_name, source_dir,
+                            encode_type, video_clip, audio_path, source, extSource, base_in_name, source_dir,
                             out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
                             chapter, subtitles_info, resolved_font_out_dir, video_title, subrender, verName
                         )
