@@ -1,4 +1,4 @@
-"""Case 16: BD + HEVC + CHS + CHT (three parallel encodes).
+﻿"""Case 16: BD + HEVC + CHS + CHT (three parallel encodes).
 HEVC muxes subtitles + fonts; the 264 outputs burn subtitles in.
 """
 import os, sys
@@ -24,7 +24,7 @@ import lamvsfunc as lamvs
     font_out_dir=str(TMP / 'font-output'),
     log_file=str(TMP / 'run.log'),
     param_x264='"{0}" --demuxer y4m --preset veryfast --crf 23 -o "{1}.mp4" -',
-    param_x265='"{0}" --y4m -D 10 --preset veryfast --crf 23 -o "{1}.mp4" -',
+    param_x265='"{0}" --y4m -D 10 --preset veryfast --crf 23 -o "{1}.265" -',
 )
 def encode(source=''):
     src = core.lsmas.LWLibavSource(source).fmtc.bitdepth(bits=16)

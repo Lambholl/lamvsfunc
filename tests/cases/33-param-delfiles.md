@@ -26,13 +26,13 @@ Automatic. The script calls `case_lib.prepare("33", ["sample.m2ts"])`.
 - Exit code: `0`.
 - Intermediates remain in `tests\.tmp\33`:
   - `sample.flac` (eac3to output)
-  - `sample.mute.mp4` (x265 output before mux)
+  - `sample.mute.265` (x265 raw HEVC output before mux)
 - Final output also remains:
   - `sample.hevc.mkv`
 
 ```powershell
 Test-Path "tests\.tmp\33\sample.flac"        # True
-Test-Path "tests\.tmp\33\sample.mute.mp4"    # True
+Test-Path "tests\.tmp\33\sample.mute.265"    # True
 Test-Path "tests\.tmp\33\sample.hevc.mkv"    # True
 ```
 

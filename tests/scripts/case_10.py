@@ -1,4 +1,4 @@
-"""Case 10: Web + HEVC full file."""
+﻿"""Case 10: Web + HEVC full file."""
 import os, sys
 sys.path.insert(0, os.path.dirname(__file__))
 from case_lib import prepare
@@ -14,7 +14,7 @@ import lamvsfunc as lamvs
     encodeTypes=['HEVC'],
     rpc=True,
     log_file=str(TMP / 'run.log'),
-    param_x265='"{0}" --y4m -D 10 --preset veryfast --crf 23 -o "{1}.mp4" -',
+    param_x265='"{0}" --y4m -D 10 --preset veryfast --crf 23 -o "{1}.265" -',
 )
 def encode(source=''):
     src = core.lsmas.LWLibavSource(source).fmtc.bitdepth(bits=16)

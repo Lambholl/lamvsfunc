@@ -215,8 +215,13 @@ def encodeProcess(
     trackers: None|list[int]=None,
     log_file: None|str=None,
     audio_language='und',
-    param_x264='"{0}" --demuxer y4m --preset veryslow --profile high --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 -o "{1}.mp4" -',
-    param_x265='"{0}" --y4m -D 10 --preset slower --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 --range limited -o "{1}.mp4" -'
+    qaac_quality=127,
+    bd_audio_track=2,
+    cut_audio_copy=False,
+    param_x265_ext='265',
+    param_x264_ext='mp4',
+    param_x264='"{0}" --demuxer y4m --preset veryslow --profile high --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 --chromaloc 2 -o "{1}.mp4" -',
+    param_x265='"{0}" --y4m -D 10 --preset slower --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 --range limited --chromaloc 2 -o "{1}.265" -'
 ):
     """
     Decorator while encoding
@@ -275,12 +280,42 @@ def encodeProcess(
     # 音频切割
     def cut_audio(src_audio, out_audio, start_sec, end_sec, is_lossless, ffmpeg_path, qaac_path, log_fh=None):
         if is_lossless:
-            _log_run([ffmpeg_path, '-y', '-i', src_audio, '-ss', str(start_sec), '-to', str(end_sec), '-vn', '-acodec', 'flac', out_audio], log_fh, check=True)
+            # FLAC: re-encode is sample-accurate. Stream copy is faster but
+            # quantizes to FLAC frame boundaries (~85 ms drift).
+            if cut_audio_copy:
+                cmd = [ffmpeg_path, '-y', '-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio, '-vn', '-c:a', 'copy', out_audio]
+            else:
+                cmd = [ffmpeg_path, '-y', '-i', src_audio, '-ss', str(start_sec), '-to', str(end_sec), '-vn', '-acodec', 'flac', out_audio]
+            _log_run(cmd, log_fh, check=True)
             return
-        tmp_wav = out_audio + '.tmp.wav'
-        _log_run([ffmpeg_path, '-y', '-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio, '-vn', '-f', 'wav', tmp_wav], log_fh, check=True)
-        _log_run([qaac_path, '-V', '127', tmp_wav, '-o', out_audio], log_fh, check=True)
-        os.remove(tmp_wav)
+        # AAC via ffmpeg-decode -> qaac-encode pipe; no temp wav on disk.
+        # CAVEAT: AAC carries ~21 ms of encoder priming plus trailing padding
+        # per encoded segment. Re-stitching segments produces audible seams.
+        # Clip mode is HEVC-only by design to avoid this; if you extend clip
+        # to 264, plan a real gapless solution (raw AAC + edit-list muxing)
+        # rather than reusing cut_audio.
+        ffmpeg_proc = subprocess.Popen(
+            [ffmpeg_path, '-y', '-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio, '-vn', '-f', 'wav', '-'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        qaac_proc = _log_popen(
+            [qaac_path, '-V', str(qaac_quality), '-', '-o', out_audio],
+            log_fh, stdin=ffmpeg_proc.stdout,
+        )
+        ffmpeg_proc.stdout.close()
+        if log_fh:
+            tee = threading.Thread(target=_tee_pipe, args=(ffmpeg_proc.stderr, sys.__stdout__, _as_log_stream(log_fh)), daemon=True)
+            tee.start()
+        qaac_proc.communicate() if not log_fh else qaac_proc.wait()
+        ffmpeg_proc.wait()
+        if log_fh:
+            tee.join()
+            if hasattr(qaac_proc, '_log_thread'):
+                qaac_proc._log_thread.join()
+        if ffmpeg_proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg (cut_audio wav pipe) exited with code {ffmpeg_proc.returncode}")
+        if qaac_proc.returncode != 0:
+            raise RuntimeError(f"qaac (cut_audio m4a) exited with code {qaac_proc.returncode}")
 
     # 参数生成
     def build_encode_params(
@@ -303,9 +338,10 @@ def encodeProcess(
             mux_cmd = [mkvmerge_path, '--output', output_mkv]
             if video_title:
                 mux_cmd.extend(['--title',  video_title.format(base_in_name)])
+            mute_hevc = f"{mute_video}.{param_x265_ext}"
             mux_cmd.extend([
                 '--language', '0:und', '--default-track', '0:yes',
-                mute_video+'.mp4', '--language', f'0:{audio_language}', '--default-track',
+                mute_hevc, '--language', f'0:{audio_language}', '--default-track',
                 '0:yes', audio_file
             ])
             # 字幕和字体（仅非分段）
@@ -346,7 +382,7 @@ def encodeProcess(
                 'mux_cmd': mux_cmd,
                 'output': output_mkv,
                 'subtitle': '',
-                'mute_video': mute_video+'.mp4'
+                'mute_video': mute_hevc,
             }
         else:
             if not verName:
@@ -360,18 +396,19 @@ def encodeProcess(
                 output_mp4 = os.path.join(source_dir, custom_name)
             else:
                 output_mp4 = f"{source[:-len(extSource)]}{f'.seg{seg_idx}' if is_clip else ''}.{verName}.mp4"
-            mute_mp4 = f"{source[:-len(extSource)]}{f'.seg{seg_idx}' if is_clip else ''}.mute.{verName}.mp4"
-            mux_cmd = [mp4box_path, '-add', mute_mp4, '-add', audio_file, '-new', output_mp4]
+            mute_stem = f"{source[:-len(extSource)]}{f'.seg{seg_idx}' if is_clip else ''}.mute.{verName}"
+            mute_x264 = f"{mute_stem}.{param_x264_ext}"
+            mux_cmd = [mp4box_path, '-add', mute_x264, '-add', audio_file, '-new', output_mp4]
             if chapter and not is_clip:
                 mux_cmd = mux_cmd[:-2] + ['-chap', source[:-len(extSource)] + '.txt'] + mux_cmd[-2:]
             params = {
                 'encode_type': encode_type,
                 'video': video_clip,
-                'encode_cmd': param_x264.format(x264_path, mute_mp4[:-4]),
+                'encode_cmd': param_x264.format(x264_path, mute_stem),
                 'mux_cmd': mux_cmd,
                 'output': output_mp4,
                 'subtitle': f"{source[:-len(extSource)]}.{verName}.ass",
-                'mute_video': mute_mp4
+                'mute_video': mute_x264,
             }
         return params
 
@@ -417,7 +454,7 @@ def encodeProcess(
                 has_hevc = 'HEVC' in encodeTypes
                 has_264 = any(t != 'HEVC' for t in encodeTypes)
                 if has_hevc:
-                    _log_run([eac3to_path, source, flac_path], log_fh, check=True)
+                    _log_run([eac3to_path, source, f'{bd_audio_track}:', flac_path], log_fh, check=True)
                     if not os.path.exists(flac_path):
                         raise FileNotFoundError(f"Failed to create {flac_path}")
                     file2del.append(flac_path)
@@ -430,7 +467,7 @@ def encodeProcess(
                         stderr=subprocess.PIPE,
                     )
                     qaac_proc = _log_popen(
-                        [qaac_path, '-V', '127', '-', '-o', m4a_path],
+                        [qaac_path, '-V', str(qaac_quality), '-', '-o', m4a_path],
                         log_fh,
                         stdin=ffmpeg_proc.stdout,
                     )

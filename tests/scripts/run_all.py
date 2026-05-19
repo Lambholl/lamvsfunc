@@ -40,7 +40,7 @@ CASES = [
     {"id": "30", "script": "case_30.py", "artifacts": ["[Test] sample [HEVC].mkv"]},
     {"id": "31", "script": "case_31.py", "artifacts": ["sample.hevc.mkv", "case31.log"]},
     {"id": "33", "script": "case_33.py",
-     "artifacts": ["sample.hevc.mkv", "sample.flac", "sample.mute.mp4"]},
+     "artifacts": ["sample.hevc.mkv", "sample.flac", "sample.mute.265"]},
     {"id": "40", "script": "case_40_checks.py"},
 ]
 
