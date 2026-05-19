@@ -1,6 +1,6 @@
 import vapoursynth as vs
 from vapoursynth import core
-import dual_out, subprocess, os, gc, sys
+import dual_out, subprocess, os, gc, sys, threading
 '''
 Functions:
 getSources
@@ -10,6 +10,73 @@ rpChecker
 getMimeType
 subsetFonts
 '''
+
+
+class _Tee:
+    """File-like wrapper that mirrors writes to multiple targets.
+    Used to dual-write Python print/sys.stdout output to console + log file."""
+    def __init__(self, *targets):
+        self.targets = [t for t in targets if t is not None]
+    def write(self, data):
+        for t in self.targets:
+            try:
+                t.write(data)
+                t.flush()
+            except Exception:
+                pass
+        return len(data)
+    def flush(self):
+        for t in self.targets:
+            try:
+                t.flush()
+            except Exception:
+                pass
+    def isatty(self):
+        for t in self.targets:
+            if hasattr(t, 'isatty') and t.isatty():
+                return True
+        return False
+
+
+def _tee_pipe(pipe, *writers):
+    """Drain a binary pipe, decoding utf-8 with replacement, mirroring to text writers."""
+    while True:
+        chunk = pipe.read(4096)
+        if not chunk:
+            break
+        text = chunk.decode('utf-8', errors='replace')
+        for w in writers:
+            if w is None:
+                continue
+            try:
+                w.write(text)
+                w.flush()
+            except Exception:
+                pass
+
+
+def _log_run(cmd, log_fh, **kw):
+    """subprocess.run wrapper that tees stdout+stderr to console and log when log_fh is set."""
+    if log_fh is None:
+        return subprocess.run(cmd, **kw)
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw)
+    _tee_pipe(p.stdout, sys.__stdout__, log_fh)
+    p.wait()
+    return p
+
+
+def _log_popen(cmd, log_fh, **kw):
+    """subprocess.Popen wrapper that tees stdout+stderr in a background thread when log_fh is set.
+    Attaches the thread as p._log_thread so the caller can join it after wait()."""
+    if log_fh is None:
+        return subprocess.Popen(cmd, **kw)
+    kw['stdout'] = subprocess.PIPE
+    kw.setdefault('stderr', subprocess.STDOUT)
+    p = subprocess.Popen(cmd, **kw)
+    t = threading.Thread(target=_tee_pipe, args=(p.stdout, sys.__stdout__, log_fh), daemon=True)
+    t.start()
+    p._log_thread = t
+    return p
 
 
 def getSources():
@@ -112,6 +179,7 @@ def encodeProcess(
     clip_frames: None|list[int]=None,
     create_torrent=False,
     trackers: None|list[int]=None,
+    log_file: None|str=None,
     param_x264='"{0}" --demuxer y4m --preset veryslow --profile high --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 -o "{1}.mp4" -',
     param_x265='"{0}" --y4m -D 10 --preset slower --crf 18 -o "{1}.mp4" -'
 ):
@@ -170,15 +238,13 @@ def encodeProcess(
         create_torrent = False
 
     # 音频切割
-    def cut_audio(src_audio, out_audio, start_sec, end_sec, is_lossless, ffmpeg_path, qaac_path):
+    def cut_audio(src_audio, out_audio, start_sec, end_sec, is_lossless, ffmpeg_path, qaac_path, log_fh=None):
         if is_lossless:
-            cmd = [ffmpeg_path, '-y', '-i', src_audio, '-ss', str(start_sec), '-to', str(end_sec), '-vn', '-acodec', 'flac', out_audio]
-            subprocess.run(cmd)
+            _log_run([ffmpeg_path, '-y', '-i', src_audio, '-ss', str(start_sec), '-to', str(end_sec), '-vn', '-acodec', 'flac', out_audio], log_fh)
             return
-        # m4a: ffmpeg writes a temp wav, qaac encodes to m4a
         tmp_wav = out_audio + '.tmp.wav'
-        subprocess.run([ffmpeg_path, '-y', '-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio, '-vn', '-f', 'wav', tmp_wav])
-        subprocess.run([qaac_path, '-V', '127', tmp_wav, '-o', out_audio])
+        _log_run([ffmpeg_path, '-y', '-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio, '-vn', '-f', 'wav', tmp_wav], log_fh)
+        _log_run([qaac_path, '-V', '127', tmp_wav, '-o', out_audio], log_fh)
         os.remove(tmp_wav)
 
     # 参数生成
@@ -276,6 +342,10 @@ def encodeProcess(
 
     def decorator(func):
         def wrapper(*args, **kw):
+            log_fh = open(log_file, 'a', encoding='utf-8', buffering=1) if log_file else None
+            _saved_stdout = sys.stdout
+            if log_fh:
+                sys.stdout = _Tee(_saved_stdout, log_fh)
             source = args[0]
             if not source.endswith(extSource):
                 raise FileNotFoundError(f'Source file extention doesn\'t match. It should have been {extSource}')
@@ -299,7 +369,7 @@ def encodeProcess(
             file2del = []
             # 抽取音频
             if sourceType == 'Web':
-                subprocess.run([ffmpeg_path, '-i', source, '-c:a', 'copy', '-vn', source[:-len(extSource)] + '.m4a'])
+                _log_run([ffmpeg_path, '-i', source, '-c:a', 'copy', '-vn', source[:-len(extSource)] + '.m4a'], log_fh)
                 if not os.path.exists(source[:-len(extSource)] + '.m4a'):
                     raise FileNotFoundError(f"Failed to create {source[:-len(extSource)]+'.m4a'}")
                 file2del.append(source[:-len(extSource)] + '.m4a')
@@ -310,22 +380,32 @@ def encodeProcess(
                 has_hevc = 'HEVC' in encodeTypes
                 has_264 = any(t != 'HEVC' for t in encodeTypes)
                 if has_hevc:
-                    subprocess.run([eac3to_path, source, flac_path])
+                    _log_run([eac3to_path, source, flac_path], log_fh)
                     if not os.path.exists(flac_path):
                         raise FileNotFoundError(f"Failed to create {flac_path}")
                     file2del.append(flac_path)
                 if has_264:
+                    # ffmpeg stdout -> qaac stdin; ffmpeg stderr is what we want to log
                     ffmpeg_proc = subprocess.Popen(
                         [ffmpeg_path, '-i', source, '-f', 'wav', '-vn', '-'],
                         stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
                     )
-                    qaac_proc = subprocess.Popen(
+                    qaac_proc = _log_popen(
                         [qaac_path, '-V', '127', '-', '-o', m4a_path],
+                        log_fh,
                         stdin=ffmpeg_proc.stdout,
                     )
                     ffmpeg_proc.stdout.close()
-                    qaac_proc.communicate()
+                    if log_fh:
+                        _tee_thread = threading.Thread(target=_tee_pipe, args=(ffmpeg_proc.stderr, sys.__stdout__, log_fh), daemon=True)
+                        _tee_thread.start()
+                    qaac_proc.communicate() if not log_fh else qaac_proc.wait()
                     ffmpeg_proc.wait()
+                    if log_fh:
+                        _tee_thread.join()
+                        if hasattr(qaac_proc, '_log_thread'):
+                            qaac_proc._log_thread.join()
                     if not os.path.exists(m4a_path):
                         raise FileNotFoundError(f"Failed to create {m4a_path}")
                     file2del.append(m4a_path)
@@ -355,7 +435,7 @@ def encodeProcess(
                         is_lossless = (sourceType == 'BD' and encode_type == 'HEVC')
                         # 音频切割
                         seg_audio = f"{source[:-len(extSource)]}.seg{seg_idx}{'.flac' if is_lossless else '.m4a'}"
-                        cut_audio(src_audio_file, seg_audio, astart, aend, is_lossless, ffmpeg_path, qaac_path)
+                        cut_audio(src_audio_file, seg_audio, astart, aend, is_lossless, ffmpeg_path, qaac_path, log_fh)
                         file2del.append(seg_audio)
                         # 视频切片
                         if encode_type == 'HEVC':
@@ -401,15 +481,21 @@ def encodeProcess(
             # 编码与封装
             encodes = []
             for params in encodeParamsList:
-                encodes.append(subprocess.Popen(params['encode_cmd'], stdin=subprocess.PIPE, shell=True))
+                encodes.append(_log_popen(params['encode_cmd'], log_fh, stdin=subprocess.PIPE, shell=True))
             dual_out.multiple_outputs([params['video'] for params in encodeParamsList], [p.stdin for p in encodes])
             for p in encodes:
-                p.communicate()
+                if log_fh:
+                    p.stdin.close()
+                    p.wait()
+                    if hasattr(p, '_log_thread'):
+                        p._log_thread.join()
+                else:
+                    p.communicate()
             for i, p in enumerate(encodes):
                 if p.returncode != 0:
                     raise RuntimeError(f"Encoder {i} ({encodeParamsList[i]['encode_type']}) exited with code {p.returncode}")
             for params in encodeParamsList:
-                subprocess.run(params['mux_cmd'])
+                _log_run(params['mux_cmd'], log_fh)
                 if not os.path.exists(params['output']):
                     raise FileNotFoundError(f"Failed to create {params['output']}")
                 file2del.append(params['mute_video'])
@@ -435,6 +521,9 @@ def encodeProcess(
             del last
             del last2
             gc.collect()
+            if log_fh:
+                sys.stdout = _saved_stdout
+                log_fh.close()
         return wrapper
     return decorator
 
