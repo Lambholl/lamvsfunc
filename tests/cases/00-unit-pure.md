@@ -18,13 +18,8 @@ plumbing and later cases will likely produce confusing failures.
 
 ## Setup
 
-Recreate the working dir empty:
-
-```powershell
-$tmp = "tests\.tmp\00"
-if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
-New-Item -ItemType Directory -Force $tmp | Out-Null
-```
+Automatic. The script calls `case_lib.prepare("00", [])` which
+recreates `tests/.tmp/00/` empty. No fixtures needed.
 
 ## Execute
 

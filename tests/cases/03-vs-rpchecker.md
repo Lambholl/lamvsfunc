@@ -14,11 +14,8 @@ diverge.
 
 ## Setup
 
-```powershell
-$tmp = "tests\.tmp\03"
-if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
-New-Item -ItemType Directory -Force $tmp | Out-Null
-```
+Automatic. The script calls `case_lib.prepare("03", [])` and writes
+the short lossless mp4 clips inside `tests/.tmp/03/`.
 
 ## Execute
 

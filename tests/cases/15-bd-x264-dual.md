@@ -13,10 +13,8 @@ works for two different burned-subtitle clips.
 
 ## Setup
 
-```powershell
-. tests\scripts\setup_case.ps1 -CaseId 15 `
-    -Files @("sample.m2ts", "sample.sc.ass", "sample.tc.ass", "sample.txt")
-```
+Automatic. The script calls
+`case_lib.prepare("15", ["sample.m2ts", "sample.sc.ass", "sample.tc.ass", "sample.txt"])`.
 
 ## Execute
 
@@ -27,16 +25,16 @@ works for two different burned-subtitle clips.
 ## Verify
 
 - Exit code: `0`.
-- Both `$env:CASE_TMP\sample.sc.mp4` and `$env:CASE_TMP\sample.tc.mp4`
+- Both `tests\.tmp\15\sample.sc.mp4` and `tests\.tmp\15\sample.tc.mp4`
   exist.
 - Identify both:
   ```powershell
-  python tests\scripts\verify_mkv.py "$env:CASE_TMP\sample.sc.mp4" tracks.length chapters.length
-  python tests\scripts\verify_mkv.py "$env:CASE_TMP\sample.tc.mp4" tracks.length chapters.length
+  python tests\scripts\verify_mkv.py "tests\.tmp\15\sample.sc.mp4" tracks.length chapters.length
+  python tests\scripts\verify_mkv.py "tests\.tmp\15\sample.tc.mp4" tracks.length chapters.length
   ```
 - Log contains rpc lines for both CHS and CHT:
   ```powershell
-  python tests\scripts\verify_log.py "$env:CASE_TMP\run.log" `
+  python tests\scripts\verify_log.py "tests\.tmp\15\run.log" `
       --must "RP Checker complete for CHS" `
       --must "RP Checker complete for CHT" `
       --must-not "broken frame found"
@@ -45,5 +43,5 @@ works for two different burned-subtitle clips.
 ## Cleanup
 
 ```powershell
-if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "$env:CASE_TMP" }
+if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "tests\.tmp\15" }
 ```

@@ -1,22 +1,22 @@
 """Error-path checks that need a source file.
 
-These exercise validation that fires inside the wrapper (i.e. after the
-decorator is applied, when encode() is actually invoked). The 01
-case covers validation that fires at decorator-construction time.
+Exercises validation that fires inside the wrapper (i.e. after the
+decorator is applied, when encode() is actually invoked). The 01 case
+covers validation that fires at decorator-construction time.
 
-The script takes a single argument: the path to a real source file to
-use (any BD m2ts will do for the path-shape checks). Most checks rely
-on filename suffixes, not the file contents, so the source can be very
-short.
-
-Usage:
-    python tests\\scripts\\case_40_checks.py <source.m2ts>
+Run:
+    python tests\\scripts\\case_40_checks.py
 """
 from __future__ import annotations
 import os
 import shutil
 import sys
 import tempfile
+
+sys.path.insert(0, os.path.dirname(__file__))
+from case_lib import prepare
+
+TMP = prepare("40", ["sample.m2ts"])
 
 
 def _check_raises(name, exc_type, fn):
@@ -32,14 +32,8 @@ def _check_raises(name, exc_type, fn):
     return 1
 
 
-def main(argv: list[str]) -> int:
-    if len(argv) < 2:
-        print("usage: case_40_checks.py <source.m2ts>", file=sys.stderr)
-        return 2
-    src = argv[1]
-    if not os.path.exists(src):
-        print(f"SKIP: source not found: {src}")
-        return 77
+def main() -> int:
+    src = str(TMP / "sample.m2ts")
     import lamvsfunc as L
     from vsenv import core  # noqa: F401  (load VS plugins)
 
@@ -47,10 +41,6 @@ def main(argv: list[str]) -> int:
 
     @L.encodeProcess(sourceType='BD', encodeTypes=['HEVC'])
     def enc_bd(source=''):
-        return core.lsmas.LWLibavSource(source).fmtc.bitdepth(bits=16)
-
-    @L.encodeProcess(sourceType='Web', encodeTypes=['HEVC'])
-    def enc_web(source=''):
         return core.lsmas.LWLibavSource(source).fmtc.bitdepth(bits=16)
 
     # ext mismatch: BD wrapper called with a .mkv path.
@@ -61,7 +51,7 @@ def main(argv: list[str]) -> int:
     os.remove(fake_mkv)
 
     # chapter=True but no chapter txt.
-    work = tempfile.mkdtemp(prefix="case40-")
+    work = tempfile.mkdtemp(prefix="case40-", dir=str(TMP))
     try:
         local_src = os.path.join(work, "x.m2ts")
         shutil.copy(src, local_src)
@@ -96,4 +86,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())

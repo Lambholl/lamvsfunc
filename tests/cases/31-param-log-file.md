@@ -12,9 +12,7 @@ and contain output from at least eac3to, x265, mkvmerge and rpChecker.
 
 ## Setup
 
-```powershell
-. tests\scripts\setup_case.ps1 -CaseId 31 -Files @("sample.m2ts")
-```
+Automatic. The script calls `case_lib.prepare("31", ["sample.m2ts"])`.
 
 ## Execute
 
@@ -25,10 +23,10 @@ and contain output from at least eac3to, x265, mkvmerge and rpChecker.
 ## Verify
 
 - Exit code: `0`.
-- `$env:CASE_TMP\case31.log` exists and is non-trivial (> 5 KB).
+- `tests\.tmp\31\case31.log` exists and is non-trivial (> 5 KB).
 - The log captures output from each tool the run touched:
   ```powershell
-  python tests\scripts\verify_log.py "$env:CASE_TMP\case31.log" `
+  python tests\scripts\verify_log.py "tests\.tmp\31\case31.log" `
       --must "eac3to processing took" `
       --must "x265 [info]:" `
       --must "mkvmerge" `
@@ -36,7 +34,7 @@ and contain output from at least eac3to, x265, mkvmerge and rpChecker.
   ```
 - No raw ANSI escape codes (ESC=0x1B) survive in the log:
   ```powershell
-  $bytes = [System.IO.File]::ReadAllBytes("$env:CASE_TMP\case31.log")
+  $bytes = [System.IO.File]::ReadAllBytes("tests\.tmp\31\case31.log")
   $hasEsc = $bytes -contains 0x1B
   # $hasEsc should be False.
   ```
@@ -44,5 +42,5 @@ and contain output from at least eac3to, x265, mkvmerge and rpChecker.
 ## Cleanup
 
 ```powershell
-if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "$env:CASE_TMP" }
+if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "tests\.tmp\31" }
 ```

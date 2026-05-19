@@ -16,10 +16,8 @@ mixed bit depths (HEVC 10-bit, x264 8-bit).
 
 ## Setup
 
-```powershell
-. tests\scripts\setup_case.ps1 -CaseId 16 `
-    -Files @("sample.m2ts", "sample.sc.ass", "sample.tc.ass", "sample.txt", "fonts")
-```
+Automatic. The script calls
+`case_lib.prepare("16", ["sample.m2ts", "sample.sc.ass", "sample.tc.ass", "sample.txt", "fonts"])`.
 
 ## Execute
 
@@ -33,12 +31,12 @@ This is the longest case; expect a few minutes.
 
 - Exit code: `0`.
 - All three outputs exist:
-  - `$env:CASE_TMP\sample.hevc.mkv`
-  - `$env:CASE_TMP\sample.sc.mp4`
-  - `$env:CASE_TMP\sample.tc.mp4`
+  - `tests\.tmp\16\sample.hevc.mkv`
+  - `tests\.tmp\16\sample.sc.mp4`
+  - `tests\.tmp\16\sample.tc.mp4`
 - HEVC mkv: 4 tracks + attachments + chapters.
   ```powershell
-  python tests\scripts\verify_mkv.py "$env:CASE_TMP\sample.hevc.mkv" `
+  python tests\scripts\verify_mkv.py "tests\.tmp\16\sample.hevc.mkv" `
       tracks.length attachments.length chapters.length
   # tracks.length: 4
   # attachments.length: >= 1
@@ -46,12 +44,12 @@ This is the longest case; expect a few minutes.
   ```
 - Both mp4s have 2 tracks + chapter.
   ```powershell
-  python tests\scripts\verify_mkv.py "$env:CASE_TMP\sample.sc.mp4" tracks.length chapters.length
-  python tests\scripts\verify_mkv.py "$env:CASE_TMP\sample.tc.mp4" tracks.length chapters.length
+  python tests\scripts\verify_mkv.py "tests\.tmp\16\sample.sc.mp4" tracks.length chapters.length
+  python tests\scripts\verify_mkv.py "tests\.tmp\16\sample.tc.mp4" tracks.length chapters.length
   ```
 - Log shows all three rpc summaries:
   ```powershell
-  python tests\scripts\verify_log.py "$env:CASE_TMP\run.log" `
+  python tests\scripts\verify_log.py "tests\.tmp\16\run.log" `
       --must "RP Checker complete for HEVC" `
       --must "RP Checker complete for CHS" `
       --must "RP Checker complete for CHT" `
@@ -61,5 +59,5 @@ This is the longest case; expect a few minutes.
 ## Cleanup
 
 ```powershell
-if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "$env:CASE_TMP" }
+if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "tests\.tmp\16" }
 ```

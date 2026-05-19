@@ -13,9 +13,7 @@ optimization (qaac should not run when only HEVC is requested).
 
 ## Setup
 
-```powershell
-. tests\scripts\setup_case.ps1 -CaseId 11 -Files @("sample.m2ts")
-```
+Automatic. The script calls `case_lib.prepare("11", ["sample.m2ts"])`.
 
 ## Execute
 
@@ -26,10 +24,10 @@ optimization (qaac should not run when only HEVC is requested).
 ## Verify
 
 - Exit code: `0`.
-- Output `$env:CASE_TMP\sample.hevc.mkv` exists.
+- Output `tests\.tmp\11\sample.hevc.mkv` exists.
 - mkvmerge identify: 2 tracks (HEVC + FLAC).
   ```powershell
-  python tests\scripts\verify_mkv.py "$env:CASE_TMP\sample.hevc.mkv" `
+  python tests\scripts\verify_mkv.py "tests\.tmp\11\sample.hevc.mkv" `
       tracks.length tracks[0].codec tracks[1].codec
   # tracks.length: 2
   # tracks[0].codec: HEVC/H.265/MPEG-H
@@ -37,7 +35,7 @@ optimization (qaac should not run when only HEVC is requested).
   ```
 - Log file:
   ```powershell
-  python tests\scripts\verify_log.py "$env:CASE_TMP\run.log" `
+  python tests\scripts\verify_log.py "tests\.tmp\11\run.log" `
       --must "RP Checker complete for HEVC" `
       --must-not "qaac" `
       --must-not "broken frame found"
@@ -47,5 +45,5 @@ optimization (qaac should not run when only HEVC is requested).
 ## Cleanup
 
 ```powershell
-if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "$env:CASE_TMP" }
+if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "tests\.tmp\11" }
 ```

@@ -13,9 +13,7 @@ cases 10-16) deletes them.
 
 ## Setup
 
-```powershell
-. tests\scripts\setup_case.ps1 -CaseId 33 -Files @("sample.m2ts")
-```
+Automatic. The script calls `case_lib.prepare("33", ["sample.m2ts"])`.
 
 ## Execute
 
@@ -26,20 +24,20 @@ cases 10-16) deletes them.
 ## Verify
 
 - Exit code: `0`.
-- Intermediates remain in `$env:CASE_TMP`:
+- Intermediates remain in `tests\.tmp\33`:
   - `sample.flac` (eac3to output)
   - `sample.mute.mp4` (x265 output before mux)
 - Final output also remains:
   - `sample.hevc.mkv`
 
 ```powershell
-Test-Path "$env:CASE_TMP\sample.flac"        # True
-Test-Path "$env:CASE_TMP\sample.mute.mp4"    # True
-Test-Path "$env:CASE_TMP\sample.hevc.mkv"    # True
+Test-Path "tests\.tmp\33\sample.flac"        # True
+Test-Path "tests\.tmp\33\sample.mute.mp4"    # True
+Test-Path "tests\.tmp\33\sample.hevc.mkv"    # True
 ```
 
 ## Cleanup
 
 ```powershell
-if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "$env:CASE_TMP" }
+if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "tests\.tmp\33" }
 ```

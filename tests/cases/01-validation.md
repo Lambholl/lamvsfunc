@@ -12,11 +12,7 @@ does *not* need a source file or fixture (those are in cases 40-49).
 
 ## Setup
 
-```powershell
-$tmp = "tests\.tmp\01"
-if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
-New-Item -ItemType Directory -Force $tmp | Out-Null
-```
+Automatic. `case_lib.prepare("01", [])` is called by the script itself.
 
 ## Execute
 

@@ -21,15 +21,13 @@ This case covers:
 
 ## Setup
 
-```powershell
-. tests\scripts\setup_case.ps1 -CaseId 40 -Files @("sample.m2ts")
-```
+Automatic. The script calls `case_lib.prepare("40", ["sample.m2ts"])`.
 
 ## Execute
 
 ```powershell
-& "F:\Encode tools\VS-Portable-R65\python.exe" tests\scripts\case_40_checks.py "$env:CASE_TMP\sample.m2ts" 2>&1 |
-    Tee-Object -FilePath "$env:CASE_TMP\run.log"
+& "F:\Encode tools\VS-Portable-R65\python.exe" tests\scripts\case_40_checks.py 2>&1 |
+    Tee-Object -FilePath "tests\.tmp\40\run.log"
 ```
 
 ## Verify
@@ -40,7 +38,7 @@ This case covers:
 
 Optional cross-check:
 ```powershell
-python tests\scripts\verify_log.py "$env:CASE_TMP\run.log" `
+python tests\scripts\verify_log.py "tests\.tmp\40\run.log" `
     --must "check ext mismatch (BD given .mkv): PASS" `
     --must "check missing chapter txt: PASS" `
     --must "check missing CHS subtitle: PASS" `
@@ -51,5 +49,5 @@ python tests\scripts\verify_log.py "$env:CASE_TMP\run.log" `
 ## Cleanup
 
 ```powershell
-if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "$env:CASE_TMP" }
+if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "tests\.tmp\40" }
 ```

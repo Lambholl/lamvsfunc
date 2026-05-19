@@ -12,9 +12,8 @@ attached to the output mkv.
 
 ## Setup
 
-```powershell
-. tests\scripts\setup_case.ps1 -CaseId 12 -Files @("sample.m2ts", "sample.txt")
-```
+Automatic. The script calls
+`case_lib.prepare("12", ["sample.m2ts", "sample.txt"])`.
 
 ## Execute
 
@@ -25,10 +24,10 @@ attached to the output mkv.
 ## Verify
 
 - Exit code: `0`.
-- Output `$env:CASE_TMP\sample.hevc.mkv` exists.
+- Output `tests\.tmp\12\sample.hevc.mkv` exists.
 - mkvmerge identify shows chapters:
   ```powershell
-  python tests\scripts\verify_mkv.py "$env:CASE_TMP\sample.hevc.mkv" `
+  python tests\scripts\verify_mkv.py "tests\.tmp\12\sample.hevc.mkv" `
       tracks.length chapters.length chapters[0].num_entries
   # tracks.length: 2
   # chapters.length: 1
@@ -36,7 +35,7 @@ attached to the output mkv.
   ```
 - Log:
   ```powershell
-  python tests\scripts\verify_log.py "$env:CASE_TMP\run.log" `
+  python tests\scripts\verify_log.py "tests\.tmp\12\run.log" `
       --must "RP Checker complete for HEVC" `
       --must-not "broken frame found"
   ```
@@ -44,5 +43,5 @@ attached to the output mkv.
 ## Cleanup
 
 ```powershell
-if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "$env:CASE_TMP" }
+if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "tests\.tmp\12" }
 ```

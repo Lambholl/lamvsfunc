@@ -12,9 +12,7 @@ HEVC mkv, rpChecker validates. No subtitles, no chapter.
 
 ## Setup
 
-```powershell
-. tests\scripts\setup_case.ps1 -CaseId 10 -Files @("sample.mkv")
-```
+Automatic. The script calls `case_lib.prepare("10", ["sample.mkv"])`.
 
 ## Execute
 
@@ -25,10 +23,10 @@ HEVC mkv, rpChecker validates. No subtitles, no chapter.
 ## Verify
 
 - Exit code: `0`.
-- Output `$env:CASE_TMP\sample.hevc.mkv` exists.
+- Output `tests\.tmp\10\sample.hevc.mkv` exists.
 - mkvmerge identify reports 2 tracks; track 0 codec is HEVC, track 1 is AAC.
   ```powershell
-  python tests\scripts\verify_mkv.py "$env:CASE_TMP\sample.hevc.mkv" `
+  python tests\scripts\verify_mkv.py "tests\.tmp\10\sample.hevc.mkv" `
       tracks.length tracks[0].codec tracks[1].codec
   # tracks.length: 2
   # tracks[0].codec: HEVC/H.265/MPEG-H
@@ -36,7 +34,7 @@ HEVC mkv, rpChecker validates. No subtitles, no chapter.
   ```
 - Log file contains the rpc completion line:
   ```powershell
-  python tests\scripts\verify_log.py "$env:CASE_TMP\run.log" `
+  python tests\scripts\verify_log.py "tests\.tmp\10\run.log" `
       --must "RP Checker complete for HEVC" `
       --must-not "broken frame found"
   ```
@@ -44,5 +42,5 @@ HEVC mkv, rpChecker validates. No subtitles, no chapter.
 ## Cleanup
 
 ```powershell
-if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "$env:CASE_TMP" }
+if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "tests\.tmp\10" }
 ```

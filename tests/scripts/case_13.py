@@ -1,10 +1,13 @@
 """Case 13: BD + HEVC + multi-subtitle muxing + font subsetting."""
-import os
+import os, sys
+sys.path.insert(0, os.path.dirname(__file__))
+from case_lib import prepare
+
+TMP = prepare("13", ["sample.m2ts", "sample.sc.ass", "sample.tc.ass", "sample.txt", "fonts"])
+SOURCE = str(TMP / "sample.m2ts")
+
 from vsenv import *
 import lamvsfunc as lamvs
-
-TMP = os.environ['CASE_TMP']
-SOURCE = os.path.join(TMP, 'sample.m2ts')
 
 @lamvs.encodeProcess(
     sourceType='BD',
@@ -15,9 +18,9 @@ SOURCE = os.path.join(TMP, 'sample.m2ts')
         {'type': 'CHS', 'language': 'chi', 'track_name': 'Simplified', 'is_default': True},
         {'type': 'CHT', 'language': 'chi', 'track_name': 'Traditional', 'is_default': False},
     ],
-    fonts_dir=os.path.join(TMP, 'fonts'),
-    font_out_dir=os.path.join(TMP, 'font-output'),
-    log_file=os.path.join(TMP, 'run.log'),
+    fonts_dir=str(TMP / 'fonts'),
+    font_out_dir=str(TMP / 'font-output'),
+    log_file=str(TMP / 'run.log'),
     param_x265='"{0}" --y4m -D 10 --preset veryfast --crf 23 -o "{1}.mp4" -',
 )
 def encode(source=''):

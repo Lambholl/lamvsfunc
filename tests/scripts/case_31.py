@@ -1,11 +1,14 @@
 """Case 31: log_file captures both Python and subprocess output."""
-import os
+import os, sys
+sys.path.insert(0, os.path.dirname(__file__))
+from case_lib import prepare
+
+TMP = prepare("31", ["sample.m2ts"])
+SOURCE = str(TMP / "sample.m2ts")
+LOG = str(TMP / "case31.log")
+
 from vsenv import *
 import lamvsfunc as lamvs
-
-TMP = os.environ['CASE_TMP']
-SOURCE = os.path.join(TMP, 'sample.m2ts')
-LOG = os.path.join(TMP, 'case31.log')
 
 @lamvs.encodeProcess(
     sourceType='BD',

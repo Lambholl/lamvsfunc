@@ -13,10 +13,8 @@ path.
 
 ## Setup
 
-```powershell
-. tests\scripts\setup_case.ps1 -CaseId 13 `
-    -Files @("sample.m2ts", "sample.sc.ass", "sample.tc.ass", "sample.txt", "fonts")
-```
+Automatic. The script calls
+`case_lib.prepare("13", ["sample.m2ts", "sample.sc.ass", "sample.tc.ass", "sample.txt", "fonts"])`.
 
 ## Execute
 
@@ -27,11 +25,11 @@ path.
 ## Verify
 
 - Exit code: `0`.
-- Output `$env:CASE_TMP\sample.hevc.mkv` exists.
+- Output `tests\.tmp\13\sample.hevc.mkv` exists.
 - mkvmerge identify: 4 tracks (HEVC + FLAC + sub-CHS + sub-CHT), at
   least one attachment, chapters present.
   ```powershell
-  python tests\scripts\verify_mkv.py "$env:CASE_TMP\sample.hevc.mkv" `
+  python tests\scripts\verify_mkv.py "tests\.tmp\13\sample.hevc.mkv" `
       tracks.length tracks[2].type tracks[2].properties.language `
       tracks[3].type attachments.length chapters.length
   # tracks.length: 4
@@ -43,7 +41,7 @@ path.
   ```
 - Log shows subsetting ran:
   ```powershell
-  python tests\scripts\verify_log.py "$env:CASE_TMP\run.log" `
+  python tests\scripts\verify_log.py "tests\.tmp\13\run.log" `
       --must "Subsetting fonts" `
       --must "Fonts subsetting complete" `
       --must "RP Checker complete for HEVC" `
@@ -53,5 +51,5 @@ path.
 ## Cleanup
 
 ```powershell
-if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "$env:CASE_TMP" }
+if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "tests\.tmp\13" }
 ```

@@ -14,11 +14,7 @@ synthetic source.
 
 ## Setup
 
-```powershell
-$tmp = "tests\.tmp\02"
-if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
-New-Item -ItemType Directory -Force $tmp | Out-Null
-```
+Automatic. `case_lib.prepare("02", [])` is called by the script itself.
 
 ## Execute
 

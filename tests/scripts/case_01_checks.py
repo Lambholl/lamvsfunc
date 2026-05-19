@@ -9,7 +9,12 @@ Prints `check NAME: PASS` / `check NAME: FAIL ...` per assertion. Exit
 code 0 iff every check passes.
 """
 from __future__ import annotations
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+from case_lib import prepare
+prepare("01", [])
 
 
 def _check_raises(name, exc_type, fn):

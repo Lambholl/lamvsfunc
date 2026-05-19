@@ -8,7 +8,12 @@ Exit code 0 iff every check passes.
 """
 from __future__ import annotations
 import io
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+from case_lib import prepare
+prepare("00", [])
 
 
 def _check(name, ok, detail=""):

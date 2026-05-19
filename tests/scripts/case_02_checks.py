@@ -4,7 +4,12 @@ should be visually close to the input (we just check it produces a
 sane clip).
 """
 from __future__ import annotations
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+from case_lib import prepare
+prepare("02", [])
 
 
 def _check(name, ok, detail=""):

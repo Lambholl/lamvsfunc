@@ -13,9 +13,7 @@ missing.
 
 ## Setup
 
-```powershell
-. tests\scripts\setup_case.ps1 -CaseId 30 -Files @("sample.m2ts")
-```
+Automatic. The script calls `case_lib.prepare("30", ["sample.m2ts"])`.
 
 ## Execute
 
@@ -26,15 +24,15 @@ missing.
 ## Verify
 
 - Exit code: `0`.
-- Renamed output exists at `$env:CASE_TMP\[Test] sample [HEVC].mkv`.
-- The legacy name `$env:CASE_TMP\sample.hevc.mkv` does NOT exist.
+- Renamed output exists at `tests\.tmp\30\[Test] sample [HEVC].mkv`.
+- The legacy name `tests\.tmp\30\sample.hevc.mkv` does NOT exist.
   ```powershell
-  Test-Path "$env:CASE_TMP\[Test] sample [HEVC].mkv"   # True
-  Test-Path "$env:CASE_TMP\sample.hevc.mkv"            # False
+  Test-Path "tests\.tmp\30\[Test] sample [HEVC].mkv"   # True
+  Test-Path "tests\.tmp\30\sample.hevc.mkv"            # False
   ```
 
 ## Cleanup
 
 ```powershell
-if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "$env:CASE_TMP" }
+if ($LASTEXITCODE -eq 0) { Remove-Item -Recurse -Force "tests\.tmp\30" }
 ```
