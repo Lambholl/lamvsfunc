@@ -84,14 +84,19 @@ def _as_log_stream(log_fh):
     return _LogStream(log_fh)
 
 
-def _log_run(cmd, log_fh, **kw):
-    """subprocess.run wrapper that tees stdout+stderr to console and log when log_fh is set."""
+def _log_run(cmd, log_fh, check=False, **kw):
+    """subprocess.run wrapper that tees stdout+stderr to console and log when log_fh is set.
+    Pass check=True to raise RuntimeError on a non-zero exit code."""
     if log_fh is None:
-        return subprocess.run(cmd, **kw)
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw)
-    _tee_pipe(p.stdout, sys.__stdout__, _as_log_stream(log_fh))
-    p.wait()
-    return p
+        proc = subprocess.run(cmd, **kw)
+    else:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw)
+        _tee_pipe(proc.stdout, sys.__stdout__, _as_log_stream(log_fh))
+        proc.wait()
+    if check and proc.returncode != 0:
+        exe = cmd[0] if isinstance(cmd, (list, tuple)) else str(cmd).split()[0]
+        raise RuntimeError(f"{exe} exited with code {proc.returncode}")
+    return proc
 
 
 def _log_popen(cmd, log_fh, **kw):
@@ -269,11 +274,11 @@ def encodeProcess(
     # 音频切割
     def cut_audio(src_audio, out_audio, start_sec, end_sec, is_lossless, ffmpeg_path, qaac_path, log_fh=None):
         if is_lossless:
-            _log_run([ffmpeg_path, '-y', '-i', src_audio, '-ss', str(start_sec), '-to', str(end_sec), '-vn', '-acodec', 'flac', out_audio], log_fh)
+            _log_run([ffmpeg_path, '-y', '-i', src_audio, '-ss', str(start_sec), '-to', str(end_sec), '-vn', '-acodec', 'flac', out_audio], log_fh, check=True)
             return
         tmp_wav = out_audio + '.tmp.wav'
-        _log_run([ffmpeg_path, '-y', '-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio, '-vn', '-f', 'wav', tmp_wav], log_fh)
-        _log_run([qaac_path, '-V', '127', tmp_wav, '-o', out_audio], log_fh)
+        _log_run([ffmpeg_path, '-y', '-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio, '-vn', '-f', 'wav', tmp_wav], log_fh, check=True)
+        _log_run([qaac_path, '-V', '127', tmp_wav, '-o', out_audio], log_fh, check=True)
         os.remove(tmp_wav)
 
     # 参数生成
@@ -398,7 +403,7 @@ def encodeProcess(
             file2del = []
             # 抽取音频
             if sourceType == 'Web':
-                _log_run([ffmpeg_path, '-i', source, '-c:a', 'copy', '-vn', source[:-len(extSource)] + '.m4a'], log_fh)
+                _log_run([ffmpeg_path, '-i', source, '-c:a', 'copy', '-vn', source[:-len(extSource)] + '.m4a'], log_fh, check=True)
                 if not os.path.exists(source[:-len(extSource)] + '.m4a'):
                     raise FileNotFoundError(f"Failed to create {source[:-len(extSource)]+'.m4a'}")
                 file2del.append(source[:-len(extSource)] + '.m4a')
@@ -409,7 +414,7 @@ def encodeProcess(
                 has_hevc = 'HEVC' in encodeTypes
                 has_264 = any(t != 'HEVC' for t in encodeTypes)
                 if has_hevc:
-                    _log_run([eac3to_path, source, flac_path], log_fh)
+                    _log_run([eac3to_path, source, flac_path], log_fh, check=True)
                     if not os.path.exists(flac_path):
                         raise FileNotFoundError(f"Failed to create {flac_path}")
                     file2del.append(flac_path)
@@ -435,6 +440,10 @@ def encodeProcess(
                         _tee_thread.join()
                         if hasattr(qaac_proc, '_log_thread'):
                             qaac_proc._log_thread.join()
+                    if ffmpeg_proc.returncode != 0:
+                        raise RuntimeError(f"ffmpeg (BD wav pipe) exited with code {ffmpeg_proc.returncode}")
+                    if qaac_proc.returncode != 0:
+                        raise RuntimeError(f"qaac (BD m4a) exited with code {qaac_proc.returncode}")
                     if not os.path.exists(m4a_path):
                         raise FileNotFoundError(f"Failed to create {m4a_path}")
                     file2del.append(m4a_path)
