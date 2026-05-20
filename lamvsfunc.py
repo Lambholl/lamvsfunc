@@ -497,7 +497,7 @@ def encodeProcess(
             last: vs.VideoNode = func(*args, **kw)
             last2 = down8d(last)
             encodeParamsList = []
-            # 分段处理
+            # 分段处理：按分段顺序执行（每段内部仍并行多编码器）
             if clip_frames:
                 length = last.num_frames
                 pieces = []
@@ -513,15 +513,15 @@ def encodeProcess(
                 if lastI < length:
                     pieces.append([lastI, length])
                     audios.append([lastI*last.fps_den/last.fps_num, length*last.fps_den/last.fps_num])
-                # 对每个分段生成参数
+                # 对每个分段即时执行：切音频 -> 启动本段编码 -> 输出封装 -> 可选 RPC/种子/清理
                 for seg_idx, ((start, end), (astart, aend)) in enumerate(zip(pieces, audios)):
+                    segment_params = []
+                    # 生成本段参数并切音频
                     for encode_type in encodeTypes:
                         is_lossless = (sourceType == 'BD' and encode_type == 'HEVC')
-                        # 音频切割
                         seg_audio = f"{source[:-len(extSource)]}.seg{seg_idx}{'.flac' if is_lossless else '.m4a'}"
                         cut_audio(src_audio_file, seg_audio, astart, aend, is_lossless, ffmpeg_path, qaac_path, log_fh)
                         file2del.append(seg_audio)
-                        # 视频切片
                         if encode_type == 'HEVC':
                             video_clip = last[start:end].fmtc.bitdepth(bits=10, dmode=8, patsize=64)
                             params = build_encode_params(
@@ -531,7 +531,6 @@ def encodeProcess(
                             )
                         else:
                             verName = {'CHS': 'sc', 'CHT': 'tc', 'JPSC': 'jpsc', 'JPTC': 'jptc'}[encode_type]
-                            # 先sub再切片
                             video_clip = sub(last2, source[:-len(extSource)] + f'.{verName}.ass')[start:end]
                             params = build_encode_params(
                                 encode_type, video_clip, seg_audio, source, extSource, base_in_name, source_dir,
@@ -540,7 +539,67 @@ def encodeProcess(
                             )
                         params['frame_range'] = (start, end)
                         params['seg_idx'] = seg_idx
-                        encodeParamsList.append(params)
+                        segment_params.append(params)
+
+                    # 启动本段编码器
+                    encodes = []
+                    for params in segment_params:
+                        encodes.append(_log_popen(params['encode_cmd'], log_fh, stdin=subprocess.PIPE, shell=True))
+
+                    # 将本段的视频流传入 encoders（仅本段）
+                    dual_out.multiple_outputs([p['video'] for p in segment_params], [p.stdin for p in encodes])
+
+                    # 等待编码完成并检查返回码
+                    for p in encodes:
+                        if log_fh:
+                            p.stdin.close()
+                            p.wait()
+                            if hasattr(p, '_log_thread'):
+                                p._log_thread.join()
+                        else:
+                            p.communicate()
+                    for i, p in enumerate(encodes):
+                        if p.returncode != 0:
+                            raise RuntimeError(f"Encoder {i} ({segment_params[i]['encode_type']}) exited with code {p.returncode}")
+
+                    # 本段封装与后处理
+                    for params in segment_params:
+                        _log_run(params['mux_cmd'], log_fh)
+                        if not os.path.exists(params['output']):
+                            raise FileNotFoundError(f"Failed to create {params['output']}")
+                        file2del.append(params['mute_video'])
+
+                    # 分段级删除临时文件（只删除本段产生的临时文件，主音频等全局文件保留至最后）
+                    if delFiles:
+                        for params in segment_params:
+                            seg_files = []
+                            if params.get('mute_video'):
+                                seg_files.append(params['mute_video'])
+                            # seg audio names were appended into file2del earlier; try to remove them too
+                            seg_audio_name = f"{source[:-len(extSource)]}.seg{seg_idx}{'.flac' if (sourceType == 'BD' and 'HEVC' in encodeTypes) else '.m4a'}"
+                            seg_files.append(seg_audio_name)
+                            for f in seg_files:
+                                if os.path.exists(f):
+                                    os.remove(f)
+
+                    # RPC 校验与种子（按段即时产出）
+                    if rpc:
+                        for params in segment_params:
+                            src_arg = source
+                            if params.get('frame_range'):
+                                s, e = params['frame_range']
+                                src_arg = core.lsmas.LWLibavSource(source)[s:e]
+                            msg = params['encode_type']
+                            if params.get('seg_idx') is not None:
+                                msg = f"{msg} seg{params['seg_idx']}"
+                            rpChecker(src_arg, params['output'], subtitle=params['subtitle'], subrender=sub, message=msg, output=params['output'] + '.rpc.txt')
+
+                    if create_torrent:
+                        for params in segment_params:
+                            makeTorrent(mktorrent_path, params['output'], trackers)
+
+                    # 释放编码器列表
+                    del encodes
             else:
                 # 整体处理
                 for encode_type in encodeTypes:
@@ -564,32 +623,33 @@ def encodeProcess(
                         )
                     encodeParamsList.append(params)
             # 编码与封装
-            encodes = []
-            for params in encodeParamsList:
-                encodes.append(_log_popen(params['encode_cmd'], log_fh, stdin=subprocess.PIPE, shell=True))
-            dual_out.multiple_outputs([params['video'] for params in encodeParamsList], [p.stdin for p in encodes])
-            for p in encodes:
-                if log_fh:
-                    p.stdin.close()
-                    p.wait()
-                    if hasattr(p, '_log_thread'):
-                        p._log_thread.join()
-                else:
-                    p.communicate()
-            for i, p in enumerate(encodes):
-                if p.returncode != 0:
-                    raise RuntimeError(f"Encoder {i} ({encodeParamsList[i]['encode_type']}) exited with code {p.returncode}")
-            for params in encodeParamsList:
-                _log_run(params['mux_cmd'], log_fh)
-                if not os.path.exists(params['output']):
-                    raise FileNotFoundError(f"Failed to create {params['output']}")
-                file2del.append(params['mute_video'])
+            if not clip_frames:
+                encodes = []
+                for params in encodeParamsList:
+                    encodes.append(_log_popen(params['encode_cmd'], log_fh, stdin=subprocess.PIPE, shell=True))
+                dual_out.multiple_outputs([params['video'] for params in encodeParamsList], [p.stdin for p in encodes])
+                for p in encodes:
+                    if log_fh:
+                        p.stdin.close()
+                        p.wait()
+                        if hasattr(p, '_log_thread'):
+                            p._log_thread.join()
+                    else:
+                        p.communicate()
+                for i, p in enumerate(encodes):
+                    if p.returncode != 0:
+                        raise RuntimeError(f"Encoder {i} ({encodeParamsList[i]['encode_type']}) exited with code {p.returncode}")
+                for params in encodeParamsList:
+                    _log_run(params['mux_cmd'], log_fh)
+                    if not os.path.exists(params['output']):
+                        raise FileNotFoundError(f"Failed to create {params['output']}")
+                    file2del.append(params['mute_video'])
             # 收尾
             if delFiles:
                 for f in file2del:
                     if os.path.exists(f):
                         os.remove(f)
-            if rpc:
+            if not clip_frames and rpc:
                 for params in encodeParamsList:
                     src_arg = source
                     if params.get('frame_range'):
@@ -599,10 +659,11 @@ def encodeProcess(
                     if params.get('seg_idx') is not None:
                         msg = f"{msg} seg{params['seg_idx']}"
                     rpChecker(src_arg, params['output'], subtitle=params['subtitle'], subrender=sub, message=msg, output=params['output'] + '.rpc.txt')
-            if create_torrent:
+            if not clip_frames and create_torrent:
                 for params in encodeParamsList:
                     makeTorrent(mktorrent_path, params['output'], trackers)
-            del encodes
+            if not clip_frames:
+                del encodes
             del last
             del last2
             gc.collect()
