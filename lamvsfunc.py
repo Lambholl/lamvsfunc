@@ -194,7 +194,7 @@ def encodeProcess(
     encodeTypes: None|list[str]=['CHS', 'CHT', 'HEVC'],
     subrender='libass',
     chapter=None,
-    delFiles=True,
+    delFiles=False,
     rpc=True,
     fonts_dir: None|str=None,
     font_out_dir: None|str=None,
@@ -215,13 +215,10 @@ def encodeProcess(
     trackers: None|list[int]=None,
     log_file: None|str=None,
     audio_language='jpn',
-    qaac_quality=127,
     bd_audio_track=2,
     cut_audio_copy=False,
-    param_x265_ext='265',
-    param_x264_ext='mp4',
     param_x264='"{0}" --demuxer y4m --preset veryslow --profile high --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 --chromaloc 2 -o "{1}.mp4" -',
-    param_x265='"{0}" --y4m -D 10 --preset slower --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 --range limited --chromaloc 2 -o "{1}.265" -'
+    param_x265='"{0}" --y4m -D 10 --preset slower --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 --range limited --chromaloc 2 -o "{1}.mp4" -'
 ):
     """
     Decorator while encoding
@@ -299,7 +296,7 @@ def encodeProcess(
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         qaac_proc = _log_popen(
-            [qaac_path, '-V', str(qaac_quality), '-', '-o', out_audio],
+            [qaac_path, '-V', '127', '-', '-o', out_audio],
             log_fh, stdin=ffmpeg_proc.stdout,
         )
         ffmpeg_proc.stdout.close()
@@ -338,7 +335,7 @@ def encodeProcess(
             mux_cmd = [mkvmerge_path, '--output', output_mkv]
             if video_title:
                 mux_cmd.extend(['--title',  video_title.format(base_in_name)])
-            mute_hevc = f"{mute_video}.{param_x265_ext}"
+            mute_hevc = f"{mute_video}.mp4"
             mux_cmd.extend([
                 '--language', '0:und', '--default-track', '0:yes',
                 mute_hevc, '--language', f'0:{audio_language}', '--default-track',
@@ -397,7 +394,7 @@ def encodeProcess(
             else:
                 output_mp4 = f"{source[:-len(extSource)]}{f'.seg{seg_idx}' if is_clip else ''}.{verName}.mp4"
             mute_stem = f"{source[:-len(extSource)]}{f'.seg{seg_idx}' if is_clip else ''}.mute.{verName}"
-            mute_x264 = f"{mute_stem}.{param_x264_ext}"
+            mute_x264 = f"{mute_stem}.mp4"
             mux_cmd = [mp4box_path, '-add', mute_x264, '-add', audio_file, '-new', output_mp4]
             if chapter and not is_clip:
                 mux_cmd = mux_cmd[:-2] + ['-chap', source[:-len(extSource)] + '.txt'] + mux_cmd[-2:]
@@ -467,7 +464,7 @@ def encodeProcess(
                         stderr=subprocess.PIPE,
                     )
                     qaac_proc = _log_popen(
-                        [qaac_path, '-V', str(qaac_quality), '-', '-o', m4a_path],
+                        [qaac_path, '-V', '127', '-', '-o', m4a_path],
                         log_fh,
                         stdin=ffmpeg_proc.stdout,
                     )

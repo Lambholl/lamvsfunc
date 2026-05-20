@@ -16,7 +16,7 @@ import lamvsfunc as lamvs
     chapter=False,
     rpc=True,
     log_file=LOG,
-    param_x265='"{0}" --y4m -D 10 --preset veryfast --crf 23 -o "{1}.265" -',
+    param_x265='"{0}" --y4m -D 10 --preset veryfast --crf 23 -o "{1}.mp4" -',
 )
 def encode(source=''):
     src = core.lsmas.LWLibavSource(source).fmtc.bitdepth(bits=16)

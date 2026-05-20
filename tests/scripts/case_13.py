@@ -21,7 +21,7 @@ import lamvsfunc as lamvs
     fonts_dir=str(TMP / 'fonts'),
     font_out_dir=str(TMP / 'font-output'),
     log_file=str(TMP / 'run.log'),
-    param_x265='"{0}" --y4m -D 10 --preset veryfast --crf 23 -o "{1}.265" -',
+    param_x265='"{0}" --y4m -D 10 --preset veryfast --crf 23 -o "{1}.mp4" -',
 )
 def encode(source=''):
     src = core.lsmas.LWLibavSource(source).fmtc.bitdepth(bits=16)
