@@ -1,6 +1,6 @@
 import vapoursynth as vs
 from vapoursynth import core
-import dual_out, subprocess, os, gc, sys
+import dual_out, subprocess, os, gc, sys, threading, re
 '''
 Functions:
 getSources
@@ -10,6 +10,107 @@ rpChecker
 getMimeType
 subsetFonts
 '''
+
+
+_ANSI_RE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+_BARE_CR_RE = re.compile(r'\r(?!\n)')
+
+
+def _normalize_for_log(text):
+    """Strip ANSI escapes and turn bare \\r into \\n so progress-bar output is readable in the log."""
+    return _BARE_CR_RE.sub('\n', _ANSI_RE.sub('', text))
+
+
+class _LogStream:
+    """File-like wrapper that normalizes ANSI/CR before writing to the underlying log."""
+    def __init__(self, fh):
+        self.fh = fh
+    def write(self, data):
+        if not data:
+            return 0
+        self.fh.write(_normalize_for_log(data))
+        self.fh.flush()
+        return len(data)
+    def flush(self):
+        self.fh.flush()
+
+
+class _Tee:
+    """File-like wrapper that mirrors writes to multiple targets.
+    Used to dual-write Python print/sys.stdout output to console + log file."""
+    def __init__(self, *targets):
+        self.targets = [t for t in targets if t is not None]
+    def write(self, data):
+        for t in self.targets:
+            try:
+                t.write(data)
+                t.flush()
+            except Exception:
+                pass
+        return len(data)
+    def flush(self):
+        for t in self.targets:
+            try:
+                t.flush()
+            except Exception:
+                pass
+    def isatty(self):
+        for t in self.targets:
+            if hasattr(t, 'isatty') and t.isatty():
+                return True
+        return False
+
+
+def _tee_pipe(pipe, *writers):
+    """Drain a binary pipe, decoding utf-8 with replacement, mirroring to text writers."""
+    while True:
+        chunk = pipe.read(4096)
+        if not chunk:
+            break
+        text = chunk.decode('utf-8', errors='replace')
+        for w in writers:
+            if w is None:
+                continue
+            try:
+                w.write(text)
+                w.flush()
+            except Exception:
+                pass
+
+
+def _as_log_stream(log_fh):
+    if log_fh is None or isinstance(log_fh, _LogStream):
+        return log_fh
+    return _LogStream(log_fh)
+
+
+def _log_run(cmd, log_fh, check=False, **kw):
+    """subprocess.run wrapper that tees stdout+stderr to console and log when log_fh is set.
+    Pass check=True to raise RuntimeError on a non-zero exit code."""
+    if log_fh is None:
+        proc = subprocess.run(cmd, **kw)
+    else:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw)
+        _tee_pipe(proc.stdout, sys.__stdout__, _as_log_stream(log_fh))
+        proc.wait()
+    if check and proc.returncode != 0:
+        exe = cmd[0] if isinstance(cmd, (list, tuple)) else str(cmd).split()[0]
+        raise RuntimeError(f"{exe} exited with code {proc.returncode}")
+    return proc
+
+
+def _log_popen(cmd, log_fh, **kw):
+    """subprocess.Popen wrapper that tees stdout+stderr in a background thread when log_fh is set.
+    Attaches the thread as p._log_thread so the caller can join it after wait()."""
+    if log_fh is None:
+        return subprocess.Popen(cmd, **kw)
+    kw['stdout'] = subprocess.PIPE
+    kw.setdefault('stderr', subprocess.STDOUT)
+    p = subprocess.Popen(cmd, **kw)
+    t = threading.Thread(target=_tee_pipe, args=(p.stdout, sys.__stdout__, _as_log_stream(log_fh)), daemon=True)
+    t.start()
+    p._log_thread = t
+    return p
 
 
 def getSources():
@@ -67,7 +168,8 @@ def subsetFonts(sub_paths: list[str],
                        check=True,
                        capture_output=True,
                        text=True,
-                       encoding='utf-8')
+                       encoding='utf-8',
+                       errors='replace')
         print(f"  -> Fonts subsetting complete. Saved to: {font_out_dir}")
 
     except subprocess.CalledProcessError as e:
@@ -111,8 +213,12 @@ def encodeProcess(
     clip_frames: None|list[int]=None,
     create_torrent=False,
     trackers: None|list[int]=None,
-    param_x264='"{0}" --demuxer y4m --preset veryslow --profile high --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 -o "{1}.mp4" -',
-    param_x265='"{0}" --y4m -D 10 --preset slower --crf 18 -o "{1}.mp4" -'
+    log_file: None|str=None,
+    audio_language='jpn',
+    bd_audio_track=2,
+    cut_audio_copy=False,
+    param_x264='"{0}" --demuxer y4m --preset veryslow --profile high --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 --chromaloc 2 -o "{1}.mp4" -',
+    param_x265='"{0}" --y4m -D 10 --preset slower --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 --range limited --chromaloc 2 -o "{1}.mp4" -'
 ):
     """
     Decorator while encoding
@@ -128,6 +234,28 @@ def encodeProcess(
         delFiles (bool): whether to delete mute videos and audio file after encoding
         chapter (bool): Default False on Web and True on BD, accept txt files with the same filenames as source files
     """
+    # 参数前置校验
+    KNOWN_ENCODE_TYPES = {'CHS', 'CHT', 'JPSC', 'JPTC', 'HEVC'}
+    KNOWN_SUB_TYPES = {'CHS', 'CHT', 'JPSC', 'JPTC'}
+    if sourceType not in ('Web', 'BD'):
+        raise ValueError(f"sourceType must be 'Web' or 'BD', got {sourceType!r}")
+    if not encodeTypes:
+        raise ValueError('encodeTypes cannot be empty')
+    unknown = [t for t in encodeTypes if t not in KNOWN_ENCODE_TYPES]
+    if unknown:
+        raise ValueError(f'Unknown encodeTypes {unknown}; expected subset of {sorted(KNOWN_ENCODE_TYPES)}')
+    if subtitles_info:
+        for i, sub_cfg in enumerate(subtitles_info):
+            if not isinstance(sub_cfg, dict):
+                raise TypeError(f'subtitles_info[{i}] must be a dict, got {type(sub_cfg).__name__}')
+            if sub_cfg.get('type') not in KNOWN_SUB_TYPES:
+                raise ValueError(f"subtitles_info[{i}]['type']={sub_cfg.get('type')!r}; expected one of {sorted(KNOWN_SUB_TYPES)}")
+    if clip_frames is not None:
+        if not isinstance(clip_frames, list) or any(not isinstance(f, int) or f <= 0 for f in clip_frames):
+            raise ValueError('clip_frames must be a list of positive ints')
+        if any(clip_frames[i] >= clip_frames[i+1] for i in range(len(clip_frames)-1)):
+            raise ValueError('clip_frames must be strictly increasing')
+
     # Source
     # Web means AAC and BD means FLAC
     extSource = {'Web': '.mkv', 'BD': '.m2ts'}[sourceType] if not ext else ext
@@ -139,28 +267,52 @@ def encodeProcess(
         'Web': False,
         'BD': True
     }[sourceType] if chapter == None else chapter
-    
+
     if clip_frames:
+        if any(t != 'HEVC' for t in encodeTypes):
+            raise ValueError("clip_frames mode only supports encodeTypes=['HEVC']; subtitle-burning types are disallowed because src subtitles can't be sliced losslessly here.")
         chapter = False
         create_torrent = False
-        rpc = False # 之后可能可以实现
 
     # 音频切割
-    def cut_audio(src_audio, out_audio, start_sec, end_sec, is_lossless, ffmpeg_path, qaac_path):
+    def cut_audio(src_audio, out_audio, start_sec, end_sec, is_lossless, ffmpeg_path, qaac_path, log_fh=None):
         if is_lossless:
-            # flac 切割
-            cmd = [ffmpeg_path, '-y', '-i', src_audio, '-ss', str(start_sec), '-to', str(end_sec), '-vn', '-acodec', 'flac', out_audio]
-        else:
-            # m4a 切割
-            # ffmpeg -ss -to -i src -vn -f wav - | qaac -V 127 - -o out
-            tmp_wav = out_audio + '.tmp.wav'
-            cmd1 = [ffmpeg_path, '-y', '-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio, '-vn', '-f', 'wav', tmp_wav]
-            cmd2 = [qaac_path, '-V', '127', tmp_wav, '-o', out_audio]
-            subprocess.run(cmd1, shell=True)
-            subprocess.run(cmd2, shell=True)
-            os.remove(tmp_wav)
+            # FLAC: re-encode is sample-accurate. Stream copy is faster but
+            # quantizes to FLAC frame boundaries (~85 ms drift).
+            if cut_audio_copy:
+                cmd = [ffmpeg_path, '-y', '-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio, '-vn', '-c:a', 'copy', out_audio]
+            else:
+                cmd = [ffmpeg_path, '-y', '-i', src_audio, '-ss', str(start_sec), '-to', str(end_sec), '-vn', '-acodec', 'flac', out_audio]
+            _log_run(cmd, log_fh, check=True)
             return
-        subprocess.run(cmd, shell=True)
+        # AAC via ffmpeg-decode -> qaac-encode pipe; no temp wav on disk.
+        # CAVEAT: AAC carries ~21 ms of encoder priming plus trailing padding
+        # per encoded segment. Re-stitching segments produces audible seams.
+        # Clip mode is HEVC-only by design to avoid this; if you extend clip
+        # to 264, plan a real gapless solution (raw AAC + edit-list muxing)
+        # rather than reusing cut_audio.
+        ffmpeg_proc = subprocess.Popen(
+            [ffmpeg_path, '-y', '-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio, '-vn', '-f', 'wav', '-'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        qaac_proc = _log_popen(
+            [qaac_path, '-V', '127', '-', '-o', out_audio],
+            log_fh, stdin=ffmpeg_proc.stdout,
+        )
+        ffmpeg_proc.stdout.close()
+        if log_fh:
+            tee = threading.Thread(target=_tee_pipe, args=(ffmpeg_proc.stderr, sys.__stdout__, _as_log_stream(log_fh)), daemon=True)
+            tee.start()
+        qaac_proc.communicate() if not log_fh else qaac_proc.wait()
+        ffmpeg_proc.wait()
+        if log_fh:
+            tee.join()
+            if hasattr(qaac_proc, '_log_thread'):
+                qaac_proc._log_thread.join()
+        if ffmpeg_proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg (cut_audio wav pipe) exited with code {ffmpeg_proc.returncode}")
+        if qaac_proc.returncode != 0:
+            raise RuntimeError(f"qaac (cut_audio m4a) exited with code {qaac_proc.returncode}")
 
     # 参数生成
     def build_encode_params(
@@ -175,24 +327,28 @@ def encodeProcess(
                 custom_name = out_name_templates[encode_type].format(base_in_name)
                 if not custom_name.lower().endswith('.mkv'):
                     custom_name += '.mkv'
+                if is_clip:
+                    custom_name = custom_name[:-4] + f'.seg{seg_idx}.mkv'
                 output_mkv = os.path.join(source_dir, custom_name)
             else:
                 output_mkv = f"{source[:-len(extSource)]}{f'.seg{seg_idx}' if is_clip else ''}.hevc.mkv"
             mux_cmd = [mkvmerge_path, '--output', output_mkv]
             if video_title:
                 mux_cmd.extend(['--title',  video_title.format(base_in_name)])
+            mute_hevc = f"{mute_video}.mp4"
             mux_cmd.extend([
                 '--language', '0:und', '--default-track', '0:yes',
-                mute_video+'.mp4', '--language', '0:jpn', '--default-track',
+                mute_hevc, '--language', f'0:{audio_language}', '--default-track',
                 '0:yes', audio_file
             ])
             # 字幕和字体（仅非分段）
             if subtitles_info and not is_clip:
                 for sub_cfg in subtitles_info:
-                    sub_file_path = source[:-len(extSource)] + f'.{sub_cfg.get("type")}.ass'
+                    sub_verName = {'CHS': 'sc', 'CHT': 'tc', 'JPSC': 'jpsc', 'JPTC': 'jptc'}[sub_cfg.get("type")]
+                    sub_file_path = source[:-len(extSource)] + f'.{sub_verName}.ass'
                     mux_cmd.extend([
                         "--language",
-                        f"0:{sub_cfg.get('language', 'zh')}",
+                        f"0:{sub_cfg.get('language', 'chi')}",
                         "--track-name",
                         f"0:{sub_cfg.get('track_name', '')}",
                         "--default-track",
@@ -217,12 +373,13 @@ def encodeProcess(
                     source[:-len(extSource)] + '.txt'
                 ])
             params = {
+                'encode_type': encode_type,
                 'video': video_clip,
                 'encode_cmd': param_x265.format(x265_path, mute_video),
                 'mux_cmd': mux_cmd,
                 'output': output_mkv,
                 'subtitle': '',
-                'mute_video': mute_video+'.mp4'
+                'mute_video': mute_hevc,
             }
         else:
             if not verName:
@@ -231,28 +388,40 @@ def encodeProcess(
                 custom_name = out_name_templates[encode_type].format(base_in_name)
                 if not custom_name.lower().endswith('.mp4'):
                     custom_name += '.mp4'
+                if is_clip:
+                    custom_name = custom_name[:-4] + f'.seg{seg_idx}.mp4'
                 output_mp4 = os.path.join(source_dir, custom_name)
             else:
                 output_mp4 = f"{source[:-len(extSource)]}{f'.seg{seg_idx}' if is_clip else ''}.{verName}.mp4"
-            mute_mp4 = f"{source[:-len(extSource)]}{f'.seg{seg_idx}' if is_clip else ''}.mute.{verName}.mp4"
-            mux_cmd = [mp4box_path, '-add', mute_mp4, '-add', audio_file, '-new', output_mp4]
+            mute_stem = f"{source[:-len(extSource)]}{f'.seg{seg_idx}' if is_clip else ''}.mute.{verName}"
+            mute_x264 = f"{mute_stem}.mp4"
+            mux_cmd = [mp4box_path, '-add', mute_x264, '-add', audio_file, '-new', output_mp4]
             if chapter and not is_clip:
                 mux_cmd = mux_cmd[:-2] + ['-chap', source[:-len(extSource)] + '.txt'] + mux_cmd[-2:]
             params = {
+                'encode_type': encode_type,
                 'video': video_clip,
-                'encode_cmd': param_x264.format(x264_path, mute_mp4[:-4]),
+                'encode_cmd': param_x264.format(x264_path, mute_stem),
                 'mux_cmd': mux_cmd,
                 'output': output_mp4,
                 'subtitle': f"{source[:-len(extSource)]}.{verName}.ass",
-                'mute_video': mute_mp4
+                'mute_video': mute_x264,
             }
         return params
 
     def decorator(func):
         def wrapper(*args, **kw):
+            log_fh = open(log_file, 'a', encoding='utf-8', buffering=1) if log_file else None
+            _saved_stdout = sys.stdout
+            if log_fh:
+                sys.stdout = _Tee(_saved_stdout, _LogStream(log_fh))
             source = args[0]
             if not source.endswith(extSource):
                 raise FileNotFoundError(f'Source file extention doesn\'t match. It should have been {extSource}')
+            if chapter:
+                chapter_txt = source[:-len(extSource)] + '.txt'
+                if not os.path.exists(chapter_txt):
+                    raise FileNotFoundError(f'chapter=True but chapter file not found: {chapter_txt}')
             source_dir = os.path.dirname(source) or '.'
             base_in_name = os.path.basename(source)[:-len(extSource)]
             resolved_fonts_dir = fonts_dir if fonts_dir else os.path.join(source_dir, 'fonts')
@@ -268,22 +437,63 @@ def encodeProcess(
                 subsetFonts(subtitle_paths, resolved_fonts_dir, resolved_font_out_dir, assfontsubset_path)
             file2del = []
             # 抽取音频
+            flac_audio = None  # used by HEVC outputs
+            m4a_audio = None   # used by 264 outputs and by Web HEVC
             if sourceType == 'Web':
-                subprocess.run([ffmpeg_path, '-i', source, '-c:a', 'copy', '-vn', source[:-len(extSource)] + '.m4a'], shell=True)
-                if not os.path.exists(source[:-len(extSource)] + '.m4a'):
-                    raise FileNotFoundError(f"Failed to create {source[:-len(extSource)]+'.m4a'}")
-                file2del.append(source[:-len(extSource)] + '.m4a')
-                src_audio_file = source[:-len(extSource)] + '.m4a'
+                m4a_audio = source[:-len(extSource)] + '.m4a'
+                _log_run([ffmpeg_path, '-i', source, '-c:a', 'copy', '-vn', m4a_audio], log_fh, check=True)
+                if not os.path.exists(m4a_audio):
+                    raise FileNotFoundError(f"Failed to create {m4a_audio}")
+                file2del.append(m4a_audio)
             elif sourceType == 'BD':
-                subprocess.run([eac3to_path, source, source[:-len(extSource)] + '.flac'], shell=True)
-                if not os.path.exists(source[:-len(extSource)] + '.flac'):
-                    raise FileNotFoundError(f"Failed to create {source[:-len(extSource)]+'.flac'}")
-                subprocess.run([ffmpeg_path, '-i', source, '-f', 'wav', '-vn', '-', '|', qaac_path, '-V', '127', '-', '-o', source[:-len(extSource)] + '.m4a'], shell=True)
-                if not os.path.exists(source[:-len(extSource)] + '.m4a'):
-                    raise FileNotFoundError(f"Failed to create {source[:-len(extSource)]+'.m4a'}")
-                file2del.append(source[:-len(extSource)] + '.flac')
-                file2del.append(source[:-len(extSource)] + '.m4a')
-                src_audio_file = source[:-len(extSource)] + '.flac' if 'HEVC' in encodeTypes else source[:-len(extSource)] + '.m4a'
+                flac_path = source[:-len(extSource)] + '.flac'
+                m4a_path = source[:-len(extSource)] + '.m4a'
+                has_hevc = 'HEVC' in encodeTypes
+                has_264 = any(t != 'HEVC' for t in encodeTypes)
+                if has_hevc:
+                    _log_run([eac3to_path, source, f'{bd_audio_track}:', flac_path], log_fh, check=True)
+                    if not os.path.exists(flac_path):
+                        raise FileNotFoundError(f"Failed to create {flac_path}")
+                    file2del.append(flac_path)
+                    flac_audio = flac_path
+                if has_264:
+                    # ffmpeg stdout -> qaac stdin; ffmpeg stderr is what we want to log
+                    ffmpeg_proc = subprocess.Popen(
+                        [ffmpeg_path, '-i', source, '-f', 'wav', '-vn', '-'],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    qaac_proc = _log_popen(
+                        [qaac_path, '-V', '127', '-', '-o', m4a_path],
+                        log_fh,
+                        stdin=ffmpeg_proc.stdout,
+                    )
+                    ffmpeg_proc.stdout.close()
+                    if log_fh:
+                        _tee_thread = threading.Thread(target=_tee_pipe, args=(ffmpeg_proc.stderr, sys.__stdout__, _as_log_stream(log_fh)), daemon=True)
+                        _tee_thread.start()
+                    qaac_proc.communicate() if not log_fh else qaac_proc.wait()
+                    ffmpeg_proc.wait()
+                    if log_fh:
+                        _tee_thread.join()
+                        if hasattr(qaac_proc, '_log_thread'):
+                            qaac_proc._log_thread.join()
+                    if ffmpeg_proc.returncode != 0:
+                        raise RuntimeError(f"ffmpeg (BD wav pipe) exited with code {ffmpeg_proc.returncode}")
+                    if qaac_proc.returncode != 0:
+                        raise RuntimeError(f"qaac (BD m4a) exited with code {qaac_proc.returncode}")
+                    if not os.path.exists(m4a_path):
+                        raise FileNotFoundError(f"Failed to create {m4a_path}")
+                    file2del.append(m4a_path)
+                    m4a_audio = m4a_path
+            # For clip mode (HEVC-only by validation) the segment cut input is always flac.
+            src_audio_file = flac_audio if flac_audio else m4a_audio
+
+            def audio_for(encode_type):
+                """Pick the audio file appropriate to a given encode type."""
+                if encode_type == 'HEVC' and flac_audio:
+                    return flac_audio
+                return m4a_audio
             last: vs.VideoNode = func(*args, **kw)
             last2 = down8d(last)
             encodeParamsList = []
@@ -309,11 +519,11 @@ def encodeProcess(
                         is_lossless = (sourceType == 'BD' and encode_type == 'HEVC')
                         # 音频切割
                         seg_audio = f"{source[:-len(extSource)]}.seg{seg_idx}{'.flac' if is_lossless else '.m4a'}"
-                        cut_audio(src_audio_file, seg_audio, astart, aend, is_lossless, ffmpeg_path, qaac_path)
+                        cut_audio(src_audio_file, seg_audio, astart, aend, is_lossless, ffmpeg_path, qaac_path, log_fh)
                         file2del.append(seg_audio)
                         # 视频切片
                         if encode_type == 'HEVC':
-                            video_clip = last2[start:end]
+                            video_clip = last[start:end].fmtc.bitdepth(bits=10, dmode=8, patsize=64)
                             params = build_encode_params(
                                 encode_type, video_clip, seg_audio, source, extSource, base_in_name, source_dir,
                                 out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
@@ -328,14 +538,17 @@ def encodeProcess(
                                 out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
                                 False, subtitles_info, resolved_font_out_dir, video_title, subrender, verName, True, seg_idx
                             )
+                        params['frame_range'] = (start, end)
+                        params['seg_idx'] = seg_idx
                         encodeParamsList.append(params)
             else:
                 # 整体处理
                 for encode_type in encodeTypes:
+                    audio_path = audio_for(encode_type)
                     if encode_type == 'HEVC':
-                        video_clip = last2.fmtc.bitdepth(bits=10, dmode=8, patsize=64)
+                        video_clip = last.fmtc.bitdepth(bits=10, dmode=8, patsize=64)
                         params = build_encode_params(
-                            encode_type, video_clip, src_audio_file, source, extSource, base_in_name, source_dir,
+                            encode_type, video_clip, audio_path, source, extSource, base_in_name, source_dir,
                             out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
                             chapter, subtitles_info, resolved_font_out_dir, video_title, subrender
                         )
@@ -345,7 +558,7 @@ def encodeProcess(
                             raise FileNotFoundError('Your subtitle files are not ready yet!\nMissing ' + source[:-len(extSource)] + f'.{verName}.ass')
                         video_clip = sub(last2, source[:-len(extSource)] + f'.{verName}.ass')
                         params = build_encode_params(
-                            encode_type, video_clip, src_audio_file, source, extSource, base_in_name, source_dir,
+                            encode_type, video_clip, audio_path, source, extSource, base_in_name, source_dir,
                             out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
                             chapter, subtitles_info, resolved_font_out_dir, video_title, subrender, verName
                         )
@@ -353,14 +566,21 @@ def encodeProcess(
             # 编码与封装
             encodes = []
             for params in encodeParamsList:
-                encodes.append(subprocess.Popen(params['encode_cmd'], stdin=subprocess.PIPE, shell=True))
+                encodes.append(_log_popen(params['encode_cmd'], log_fh, stdin=subprocess.PIPE, shell=True))
             dual_out.multiple_outputs([params['video'] for params in encodeParamsList], [p.stdin for p in encodes])
             for p in encodes:
-                p.communicate()
-            for p in encodes:
-                p.wait()
+                if log_fh:
+                    p.stdin.close()
+                    p.wait()
+                    if hasattr(p, '_log_thread'):
+                        p._log_thread.join()
+                else:
+                    p.communicate()
+            for i, p in enumerate(encodes):
+                if p.returncode != 0:
+                    raise RuntimeError(f"Encoder {i} ({encodeParamsList[i]['encode_type']}) exited with code {p.returncode}")
             for params in encodeParamsList:
-                subprocess.run(params['mux_cmd'], shell=True)
+                _log_run(params['mux_cmd'], log_fh)
                 if not os.path.exists(params['output']):
                     raise FileNotFoundError(f"Failed to create {params['output']}")
                 file2del.append(params['mute_video'])
@@ -371,7 +591,14 @@ def encodeProcess(
                         os.remove(f)
             if rpc:
                 for params in encodeParamsList:
-                    rpChecker(source, params['output'], subtitle=params['subtitle'], subrender=sub, message=params.get('subtitle',''), output=params['output'] + '.rpc.txt')
+                    src_arg = source
+                    if params.get('frame_range'):
+                        s, e = params['frame_range']
+                        src_arg = core.lsmas.LWLibavSource(source)[s:e]
+                    msg = params['encode_type']
+                    if params.get('seg_idx') is not None:
+                        msg = f"{msg} seg{params['seg_idx']}"
+                    rpChecker(src_arg, params['output'], subtitle=params['subtitle'], subrender=sub, message=msg, output=params['output'] + '.rpc.txt')
             if create_torrent:
                 for params in encodeParamsList:
                     makeTorrent(mktorrent_path, params['output'], trackers)
@@ -379,6 +606,9 @@ def encodeProcess(
             del last
             del last2
             gc.collect()
+            if log_fh:
+                sys.stdout = _saved_stdout
+                log_fh.close()
         return wrapper
     return decorator
 
@@ -412,7 +642,7 @@ def rpChecker(source,
     rip = force8bit(rip)
 
     if src.width != rip.width or src.height != rip.height:
-        src = src.resize.Bicubic(rip.width, rip.height)
+        rip = rip.resize.Bicubic(src.width, src.height)
 
     src_planes = [src.std.ShufflePlanes(i, vs.GRAY) for i in range(3)]
     rip_planes = [rip.std.ShufflePlanes(i, vs.GRAY) for i in range(3)]
@@ -423,35 +653,34 @@ def rpChecker(source,
     broken_frame = False
     total_frames = len(src)
     print(f"\nRP Checker is analyzing {message}:")
-    for i in range(total_frames):
-        PSNR_Y = cmp_planes[0].get_frame(i).props.PlanePSNR
-        PSNR_U = cmp_planes[1].get_frame(i).props.PlanePSNR
-        PSNR_V = cmp_planes[2].get_frame(i).props.PlanePSNR
+    out_file = None
+    try:
+        for i in range(total_frames):
+            PSNR_Y = cmp_planes[0].get_frame(i).props.PlanePSNR
+            PSNR_U = cmp_planes[1].get_frame(i).props.PlanePSNR
+            PSNR_V = cmp_planes[2].get_frame(i).props.PlanePSNR
 
-        if (i % 100 == 0):
-            output_blank = " " * 50
-            sys.stdout.write(f"\r{output_blank}")
-            sys.stdout.write(
-                f"\rProcessing frame {i}/{total_frames}: Y-{round(PSNR_Y)} U-{round(PSNR_U)} V-{round(PSNR_V)}"
-            )
+            if (i % 100 == 0):
+                sys.stdout.write(
+                    f"\rProcessing frame {i}/{total_frames}: Y-{round(PSNR_Y)} U-{round(PSNR_U)} V-{round(PSNR_V)}     "
+                )
 
-        if (PSNR_Y < 30) | (PSNR_U < 40) | (PSNR_V < 40):
-            with open(output, 'a') as f:
+            if (PSNR_Y < 30) | (PSNR_U < 40) | (PSNR_V < 40):
                 if not broken_frame:
                     broken_frame = True
-                    print(f"RPC results for {message}", file=f)
+                    out_file = open(output, 'a')
+                    print(f"RPC results for {message}", file=out_file)
                 print(
                     f"Possible broken frame {i}: Y-{PSNR_Y} U-{PSNR_U} V-{PSNR_V}",
-                    file=f)
+                    file=out_file)
+    finally:
+        if out_file is not None:
+            out_file.close()
 
     if broken_frame:
-        print(
-            f"\n\033[;31mRP Checker complete for {message}, broken frame found, please check output file!!!\033[0m"
-        )
+        print(f"\nRP Checker complete for {message}, broken frame found, please check output file!!!")
     else:
-        print(
-            f"\n\033[;32mRP Checker complete for {message}, no broken frame found\033[0m"
-        )
+        print(f"\nRP Checker complete for {message}, no broken frame found")
 
 
 def makeTorrent(mktorrent_path,
