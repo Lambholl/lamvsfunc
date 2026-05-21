@@ -1,18 +1,21 @@
-﻿"""Case 16: BD + HEVC + CHS + CHT (three parallel encodes).
-HEVC muxes subtitles + fonts; the 264 outputs burn subtitles in.
+"""Case 21: Web + HEVC + CHS + CHT (three parallel encodes).
+
+HEVC muxes subtitles + fonts; the 264 outputs burn subtitles in. Web
+counterpart of case 16. The single ffmpeg-copy m4a is reused by all
+three encoders (no qaac re-extraction).
 """
 import os, sys
 sys.path.insert(0, os.path.dirname(__file__))
 from case_lib import prepare
 
-TMP = prepare("16", ["sample.m2ts", "sample.sc.ass", "sample.tc.ass", "sample.txt", "fonts"], trim_seconds=15)
-SOURCE = str(TMP / "sample.m2ts")
+TMP = prepare("21", ["sample.mkv", "sample.sc.ass", "sample.tc.ass", "sample.txt", "fonts"], trim_seconds=15)
+SOURCE = str(TMP / "sample.mkv")
 
 from vsenv import *
 import lamvsfunc as lamvs
 
 @lamvs.encodeProcess(
-    sourceType='BD',
+    sourceType='Web',
     encodeTypes=['HEVC', 'CHS', 'CHT'],
     chapter=True,
     rpc=True,

@@ -3,7 +3,7 @@ import os, sys
 sys.path.insert(0, os.path.dirname(__file__))
 from case_lib import prepare
 
-TMP = prepare("33", ["sample.m2ts"])
+TMP = prepare("33", ["sample.m2ts"], trim_seconds=15)
 SOURCE = str(TMP / "sample.m2ts")
 
 from vsenv import *

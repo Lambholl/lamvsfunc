@@ -14,12 +14,13 @@ global pass over `file2del` rather than a per-segment delete block.
 ## Prerequisites
 
 - Tools on PATH: `eac3to`, `mkvmerge`, `x265`, `ffmpeg`.
-- Fixture: `sample.m2ts` with **>= 1200 frames** (three segments:
-  [0,600), [600,1200), [1200, end)).
+- Fixture: `sample.m2ts`. The case trims to 15 s before running. Three
+  segments produced at `clip_frames=[80, 160]`.
 
 ## Setup
 
-Automatic. The script calls `case_lib.prepare("34", ["sample.m2ts"])`.
+Automatic. The script calls
+`case_lib.prepare("34", ["sample.m2ts"], trim_seconds=15)`.
 
 ## Execute
 
@@ -30,10 +31,10 @@ Automatic. The script calls `case_lib.prepare("34", ["sample.m2ts"])`.
 ## Verify
 
 - Exit code: `0`.
-- Per-segment intermediates removed:
+- Per-segment intermediates removed (HEVC clip seg names are zero-padded):
 
   ```powershell
-  foreach ($i in 0,1,2) {
+  foreach ($i in '00','01','02') {
       Test-Path "tests\.tmp\34\sample.seg$i.flac"        # False
       Test-Path "tests\.tmp\34\sample.seg$i.mute.mp4"    # False
   }
@@ -46,7 +47,7 @@ Automatic. The script calls `case_lib.prepare("34", ["sample.m2ts"])`.
 - Final segment outputs kept:
 
   ```powershell
-  foreach ($i in 0,1,2) {
+  foreach ($i in '00','01','02') {
       Test-Path "tests\.tmp\34\sample.seg$i.hevc.mkv"    # True
   }
   ```
