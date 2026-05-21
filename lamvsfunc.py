@@ -41,6 +41,22 @@ def _seg_suffix(seg_idx, *, padded):
     return f'.seg{seg_idx:0>2}' if padded else f'.seg{seg_idx}'
 
 
+@dataclasses.dataclass
+class EncodePlan:
+    """One encoder + mux job. frame_range / seg_idx / seg_audio are
+    populated by the wrapper in clip mode and left as None otherwise."""
+    encode_type: str
+    video: object  # vs.VideoNode fed to the encoder via dual_out
+    encode_cmd: str  # shell command, has stdin set to the video pipe
+    mux_cmd: list   # argv list for mkvmerge/MP4Box
+    output: str     # final muxed output path
+    mute_video: str = ''   # intermediate encoder output, to be deleted
+    subtitle: str = ''     # ass path for rpc subrender; '' for HEVC
+    frame_range: object = None
+    seg_idx: object = None
+    seg_audio: object = None
+
+
 @dataclasses.dataclass(frozen=True)
 class EncodeContext:
     """Frozen snapshot of all encodeProcess parameters after validation.
@@ -476,15 +492,14 @@ def encodeProcess(
                     '--chapter-language', 'en', '--chapters',
                     source_noext + '.txt'
                 ])
-            return {
-                'encode_type': encode_type,
-                'video': video_clip,
-                'encode_cmd': ctx.param_x265.format(ctx.x265_path, mute_video),
-                'mux_cmd': mux_cmd,
-                'output': output_mkv,
-                'subtitle': '',
-                'mute_video': mute_hevc,
-            }
+            return EncodePlan(
+                encode_type=encode_type,
+                video=video_clip,
+                encode_cmd=ctx.param_x265.format(ctx.x265_path, mute_video),
+                mux_cmd=mux_cmd,
+                output=output_mkv,
+                mute_video=mute_hevc,
+            )
         if not verName:
             raise ValueError('verName required for non-HEVC')
         seg = _seg_suffix(seg_idx if is_clip else None, padded=False)
@@ -502,15 +517,15 @@ def encodeProcess(
         mux_cmd = [ctx.mp4box_path, '-add', mute_x264, '-add', audio_file, '-new', output_mp4]
         if chap and not is_clip:
             mux_cmd = mux_cmd[:-2] + ['-chap', source_noext + '.txt'] + mux_cmd[-2:]
-        return {
-            'encode_type': encode_type,
-            'video': video_clip,
-            'encode_cmd': ctx.param_x264.format(ctx.x264_path, mute_stem),
-            'mux_cmd': mux_cmd,
-            'output': output_mp4,
-            'subtitle': f"{source_noext}.{verName}.ass",
-            'mute_video': mute_x264,
-        }
+        return EncodePlan(
+            encode_type=encode_type,
+            video=video_clip,
+            encode_cmd=ctx.param_x264.format(ctx.x264_path, mute_stem),
+            mux_cmd=mux_cmd,
+            output=output_mp4,
+            mute_video=mute_x264,
+            subtitle=f"{source_noext}.{verName}.ass",
+        )
 
     def decorator(func):
         def wrapper(*args, **kw):
@@ -608,18 +623,18 @@ def encodeProcess(
                             ctx, encode_type, video_clip, seg_audio, source, source_dir, base_in_name,
                             chap=False, font_out_dir=resolved_font_out_dir, is_clip=True, seg_idx=seg_idx,
                         )
-                        params['frame_range'] = (start, end)
-                        params['seg_idx'] = seg_idx
-                        params['seg_audio'] = seg_audio
+                        params.frame_range = (start, end)
+                        params.seg_idx = seg_idx
+                        params.seg_audio = seg_audio
                         segment_params.append(params)
 
                     # 启动本段编码器
                     encodes = []
                     for params in segment_params:
-                        encodes.append(_log_popen(params['encode_cmd'], log_fh, stdin=subprocess.PIPE, shell=True))
+                        encodes.append(_log_popen(params.encode_cmd, log_fh, stdin=subprocess.PIPE, shell=True))
 
                     # 将本段的视频流传入 encoders（仅本段）
-                    dual_out.multiple_outputs([p['video'] for p in segment_params], [p.stdin for p in encodes])
+                    dual_out.multiple_outputs([p.video for p in segment_params], [p.stdin for p in encodes])
 
                     # 等待编码完成并检查返回码
                     for p in encodes:
@@ -632,30 +647,30 @@ def encodeProcess(
                             p.communicate()
                     for i, p in enumerate(encodes):
                         if p.returncode != 0:
-                            raise RuntimeError(f"Encoder {i} ({segment_params[i]['encode_type']}) exited with code {p.returncode}")
+                            raise RuntimeError(f"Encoder {i} ({segment_params[i].encode_type}) exited with code {p.returncode}")
 
                     # 本段封装与后处理
                     for params in segment_params:
-                        _log_run(params['mux_cmd'], log_fh)
-                        if not os.path.exists(params['output']):
-                            raise FileNotFoundError(f"Failed to create {params['output']}")
-                        file2del.append(params['mute_video'])
+                        _log_run(params.mux_cmd, log_fh)
+                        if not os.path.exists(params.output):
+                            raise FileNotFoundError(f"Failed to create {params.output}")
+                        file2del.append(params.mute_video)
 
                     # RPC 校验与种子（按段即时产出）
                     if rpc:
                         for params in segment_params:
                             src_arg = source
-                            if params.get('frame_range'):
-                                s, e = params['frame_range']
+                            if params.frame_range:
+                                s, e = params.frame_range
                                 src_arg = core.lsmas.LWLibavSource(source)[s:e]
-                            msg = params['encode_type']
-                            if params.get('seg_idx') is not None:
-                                msg = f"{msg} seg{params['seg_idx']}"
-                            rpChecker(src_arg, params['output'], subtitle=params['subtitle'], subrender=sub, message=msg, output=params['output'] + '.rpc.txt')
+                            msg = params.encode_type
+                            if params.seg_idx is not None:
+                                msg = f"{msg} seg{params.seg_idx}"
+                            rpChecker(src_arg, params.output, subtitle=params.subtitle, subrender=sub, message=msg, output=params.output + '.rpc.txt')
 
                     if create_torrent:
                         for params in segment_params:
-                            makeTorrent(mktorrent_path, params['output'], trackers)
+                            makeTorrent(mktorrent_path, params.output, trackers)
 
                     # 释放编码器列表
                     del encodes
@@ -683,8 +698,8 @@ def encodeProcess(
             if not clip_frames:
                 encodes = []
                 for params in encodeParamsList:
-                    encodes.append(_log_popen(params['encode_cmd'], log_fh, stdin=subprocess.PIPE, shell=True))
-                dual_out.multiple_outputs([params['video'] for params in encodeParamsList], [p.stdin for p in encodes])
+                    encodes.append(_log_popen(params.encode_cmd, log_fh, stdin=subprocess.PIPE, shell=True))
+                dual_out.multiple_outputs([params.video for params in encodeParamsList], [p.stdin for p in encodes])
                 for p in encodes:
                     if log_fh:
                         p.stdin.close()
@@ -695,12 +710,12 @@ def encodeProcess(
                         p.communicate()
                 for i, p in enumerate(encodes):
                     if p.returncode != 0:
-                        raise RuntimeError(f"Encoder {i} ({encodeParamsList[i]['encode_type']}) exited with code {p.returncode}")
+                        raise RuntimeError(f"Encoder {i} ({encodeParamsList[i].encode_type}) exited with code {p.returncode}")
                 for params in encodeParamsList:
-                    _log_run(params['mux_cmd'], log_fh)
-                    if not os.path.exists(params['output']):
-                        raise FileNotFoundError(f"Failed to create {params['output']}")
-                    file2del.append(params['mute_video'])
+                    _log_run(params.mux_cmd, log_fh)
+                    if not os.path.exists(params.output):
+                        raise FileNotFoundError(f"Failed to create {params.output}")
+                    file2del.append(params.mute_video)
             # 收尾
             if delFiles:
                 for f in file2del:
@@ -710,16 +725,16 @@ def encodeProcess(
                 if rpc:
                     for params in encodeParamsList:
                         src_arg = source
-                        if params.get('frame_range'):
-                            s, e = params['frame_range']
+                        if params.frame_range:
+                            s, e = params.frame_range
                             src_arg = core.lsmas.LWLibavSource(source)[s:e]
-                        msg = params['encode_type']
-                        if params.get('seg_idx') is not None:
-                            msg = f"{msg} seg{params['seg_idx']}"
-                        rpChecker(src_arg, params['output'], subtitle=params['subtitle'], subrender=sub, message=msg, output=params['output'] + '.rpc.txt')
+                        msg = params.encode_type
+                        if params.seg_idx is not None:
+                            msg = f"{msg} seg{params.seg_idx}"
+                        rpChecker(src_arg, params.output, subtitle=params.subtitle, subrender=sub, message=msg, output=params.output + '.rpc.txt')
                 if create_torrent:
                     for params in encodeParamsList:
-                        makeTorrent(mktorrent_path, params['output'], trackers)
+                        makeTorrent(mktorrent_path, params.output, trackers)
                 del encodes
             del last
             del last2
