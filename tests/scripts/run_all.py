@@ -41,6 +41,8 @@ CASES = [
     {"id": "31", "script": "case_31.py", "artifacts": ["sample.hevc.mkv", "case31.log"]},
     {"id": "33", "script": "case_33.py",
      "artifacts": ["sample.hevc.mkv", "sample.flac", "sample.mute.mp4"]},
+    {"id": "34", "script": "case_34.py",
+     "artifacts": ["sample.seg0.hevc.mkv", "sample.seg1.hevc.mkv", "sample.seg2.hevc.mkv"]},
     {"id": "40", "script": "case_40_checks.py"},
 ]
 
