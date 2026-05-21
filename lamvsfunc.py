@@ -516,21 +516,12 @@ def encodeProcess(
                         seg_audio = f"{source[:-len(extSource)]}.seg{seg_idx}{'.flac' if is_lossless else '.m4a'}"
                         cut_audio(src_audio_file, seg_audio, astart, aend, is_lossless, ffmpeg_path, qaac_path, log_fh)
                         file2del.append(seg_audio)
-                        if encode_type == 'HEVC':
-                            video_clip = last[start:end].fmtc.bitdepth(bits=10, dmode=8, patsize=64)
-                            params = build_encode_params(
-                                encode_type, video_clip, seg_audio, source, extSource, base_in_name, source_dir,
-                                out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-                                False, subtitles_info, resolved_font_out_dir, video_title, None, True, seg_idx
-                            )
-                        else:
-                            verName = {'CHS': 'sc', 'CHT': 'tc', 'JPSC': 'jpsc', 'JPTC': 'jptc'}[encode_type]
-                            video_clip = sub(last2, source[:-len(extSource)] + f'.{verName}.ass')[start:end]
-                            params = build_encode_params(
-                                encode_type, video_clip, seg_audio, source, extSource, base_in_name, source_dir,
-                                out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-                                False, subtitles_info, resolved_font_out_dir, video_title, verName, True, seg_idx
-                            )
+                        video_clip = last[start:end].fmtc.bitdepth(bits=10, dmode=8, patsize=64)
+                        params = build_encode_params(
+                            encode_type, video_clip, seg_audio, source, extSource, base_in_name, source_dir,
+                            out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
+                            False, subtitles_info, resolved_font_out_dir, video_title, None, True, seg_idx
+                        )
                         params['frame_range'] = (start, end)
                         params['seg_idx'] = seg_idx
                         params['seg_audio'] = seg_audio
