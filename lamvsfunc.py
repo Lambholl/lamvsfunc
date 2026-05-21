@@ -212,6 +212,245 @@ class EncodeContext:
     param_x265: str
 
 
+def _validate_source_path(ctx, source, chap):
+    """Reject obviously-wrong source paths before any heavy work runs."""
+    if not source.endswith(ctx.extSource):
+        raise FileNotFoundError(f"Source file extention doesn't match. It should have been {ctx.extSource}")
+    if chap:
+        chapter_txt = source.removesuffix(ctx.extSource) + '.txt'
+        if not os.path.exists(chapter_txt):
+            raise FileNotFoundError(f'chapter=True but chapter file not found: {chapter_txt}')
+
+
+def _subset_fonts_if_needed(ctx, source, source_dir, log_fh):
+    """When HEVC + subtitles_info is in play, verify each .ass exists and
+    run AssFontSubset over them. Returns the resolved font output dir
+    even when nothing was subsetted, so callers can attach fonts later."""
+    source_noext = source.removesuffix(ctx.extSource)
+    resolved_fonts_dir = ctx.fonts_dir if ctx.fonts_dir else os.path.join(source_dir, 'fonts')
+    resolved_font_out_dir = ctx.font_out_dir if ctx.font_out_dir else source_noext + '-font-output'
+    if 'HEVC' in ctx.encodeTypes and ctx.subtitles_info:
+        subtitle_paths = []
+        for sub_cfg in ctx.subtitles_info:
+            verName = SUB_TYPE_TO_VERNAME[sub_cfg.get("type")]
+            sp = source_noext + f'.{verName}.ass'
+            if not os.path.exists(sp):
+                raise FileNotFoundError(f"Subtitle file missing: {sp}")
+            subtitle_paths.append(sp)
+        subsetFonts(subtitle_paths, resolved_fonts_dir, resolved_font_out_dir, ctx.assfontsubset_path)
+    return resolved_font_out_dir
+
+
+def _extract_audio(ctx, source, file2del, log_fh):
+    """Extract source audio once per encodeProcess invocation.
+
+    Web copies the AAC stream verbatim with ffmpeg into one .m4a.
+    BD goes through eac3to for the lossless flac (when HEVC is needed)
+    and ffmpeg->qaac for a separate .m4a (when any 264 output is
+    needed). Returns (flac_audio, m4a_audio, src_audio_for_cutting);
+    src_audio is the one a clip-mode cut_audio should slice from.
+    """
+    source_noext = source.removesuffix(ctx.extSource)
+    flac_audio = None
+    m4a_audio = None
+    if ctx.sourceType == 'Web':
+        m4a_audio = source_noext + '.m4a'
+        _log_run([ctx.ffmpeg_path, '-i', source, '-c:a', 'copy', '-vn', m4a_audio], log_fh, check=True)
+        if not os.path.exists(m4a_audio):
+            raise FileNotFoundError(f"Failed to create {m4a_audio}")
+        file2del.append(m4a_audio)
+    elif ctx.sourceType == 'BD':
+        flac_path = source_noext + '.flac'
+        m4a_path = source_noext + '.m4a'
+        has_hevc = 'HEVC' in ctx.encodeTypes
+        has_264 = any(t != 'HEVC' for t in ctx.encodeTypes)
+        if has_hevc:
+            _log_run([ctx.eac3to_path, source, f'{ctx.bd_audio_track}:', flac_path], log_fh, check=True)
+            if not os.path.exists(flac_path):
+                raise FileNotFoundError(f"Failed to create {flac_path}")
+            file2del.append(flac_path)
+            flac_audio = flac_path
+        if has_264:
+            _ffmpeg_to_qaac(['-i', source], m4a_path, ctx.ffmpeg_path, ctx.qaac_path, log_fh)
+            if not os.path.exists(m4a_path):
+                raise FileNotFoundError(f"Failed to create {m4a_path}")
+            file2del.append(m4a_path)
+            m4a_audio = m4a_path
+    src_audio_file = flac_audio if flac_audio else m4a_audio
+    return flac_audio, m4a_audio, src_audio_file
+
+
+def _audio_for(ctx, encode_type, flac_audio, m4a_audio):
+    """The audio file to mux for a given encode type. BD HEVC takes flac,
+    everything else takes the AAC m4a."""
+    if encode_type == 'HEVC' and ctx.sourceType == 'BD' and flac_audio:
+        return flac_audio
+    return m4a_audio
+
+
+def _compute_segments(clip_frames, last):
+    """Return a list of (seg_idx, start, end, audio_start, audio_end).
+
+    Non-clip mode yields a single tuple with seg_idx=None and the other
+    fields all None — the per-segment pipeline treats that as "use the
+    full clip and pre-extracted audio". clip_frames mode splits last
+    into ordered non-empty segments; any cut point past last.num_frames
+    is dropped.
+    """
+    if not clip_frames:
+        return [(None, None, None, None, None)]
+    length = last.num_frames
+    pieces = []
+    audios = []
+    lastI = 0
+    for i in clip_frames:
+        if i > length:
+            break
+        if lastI != i:
+            pieces.append((lastI, i))
+            audios.append((lastI*last.fps_den/last.fps_num, i*last.fps_den/last.fps_num))
+        lastI = i
+    if lastI < length:
+        pieces.append((lastI, length))
+        audios.append((lastI*last.fps_den/last.fps_num, length*last.fps_den/last.fps_num))
+    return [
+        (idx, pieces[idx][0], pieces[idx][1], audios[idx][0], audios[idx][1])
+        for idx in range(len(pieces))
+    ]
+
+
+def _build_plans_for_segment(
+    ctx, source, source_dir, base_in_name, last, last2,
+    flac_audio, m4a_audio, src_audio_file, resolved_font_out_dir,
+    chap, file2del, log_fh,
+    seg_idx, start, end, astart, aend,
+):
+    """Build one EncodePlan per encodeType for this segment.
+
+    In clip mode the segment owns a sliced .seg{idx}.flac/m4a (cut here)
+    and a sliced video clip; in non-clip mode each plan reuses the
+    pre-extracted full audio and the full video clip.
+    """
+    is_clip = seg_idx is not None
+    source_noext = source.removesuffix(ctx.extSource)
+    plans = []
+    for encode_type in ctx.encodeTypes:
+        if is_clip:
+            is_lossless = (ctx.sourceType == 'BD' and encode_type == 'HEVC')
+            seg_audio = f"{source_noext}{_seg_suffix(seg_idx, padded=True)}{'.flac' if is_lossless else '.m4a'}"
+            _cut_audio(ctx, src_audio_file, seg_audio, astart, aend, is_lossless, log_fh)
+            file2del.append(seg_audio)
+            audio_file = seg_audio
+            video_clip = last[start:end].fmtc.bitdepth(bits=10, dmode=8, patsize=64)
+            verName = None
+        else:
+            audio_file = _audio_for(ctx, encode_type, flac_audio, m4a_audio)
+            seg_audio = None
+            if encode_type == 'HEVC':
+                video_clip = last.fmtc.bitdepth(bits=10, dmode=8, patsize=64)
+                verName = None
+            else:
+                verName = SUB_TYPE_TO_VERNAME[encode_type]
+                ass_path = source_noext + f'.{verName}.ass'
+                if not os.path.isfile(ass_path):
+                    raise FileNotFoundError(f'Your subtitle files are not ready yet!\nMissing {ass_path}')
+                video_clip = ctx.sub(last2, ass_path)
+        plan = _build_encode_plan(
+            ctx, encode_type, video_clip, audio_file, source, source_dir, base_in_name,
+            chap=chap, font_out_dir=resolved_font_out_dir, verName=verName,
+            is_clip=is_clip, seg_idx=seg_idx,
+        )
+        if is_clip:
+            plan.frame_range = (start, end)
+            plan.seg_idx = seg_idx
+            plan.seg_audio = seg_audio
+        plans.append(plan)
+    return plans
+
+
+def _run_encoders(plans, log_fh):
+    """Spawn one encoder per plan, fan VS frames out via dual_out, and
+    wait for every encoder to exit. Raises on any non-zero exit code."""
+    encodes = [
+        _log_popen(plan.encode_cmd, log_fh, stdin=subprocess.PIPE, shell=True)
+        for plan in plans
+    ]
+    dual_out.multiple_outputs([p.video for p in plans], [e.stdin for e in encodes])
+    for e in encodes:
+        if log_fh:
+            e.stdin.close()
+            e.wait()
+            if hasattr(e, '_log_thread'):
+                e._log_thread.join()
+        else:
+            e.communicate()
+    for i, e in enumerate(encodes):
+        if e.returncode != 0:
+            raise RuntimeError(f"Encoder {i} ({plans[i].encode_type}) exited with code {e.returncode}")
+
+
+def _mux_plans(plans, log_fh, file2del):
+    """Mux every plan's mute video + audio (+ subs/fonts/chap when
+    applicable) into the final output. Appends mute intermediates to
+    file2del so they can be cleaned at the end."""
+    for plan in plans:
+        _log_run(plan.mux_cmd, log_fh)
+        if not os.path.exists(plan.output):
+            raise FileNotFoundError(f"Failed to create {plan.output}")
+        file2del.append(plan.mute_video)
+
+
+def _rpc_plans(ctx, plans, source):
+    """Run rpChecker for every plan, writing one .rpc.txt next to each
+    output. Clip-mode plans carry frame_range and seg_idx so messages
+    and the lsmas slice are scoped to the segment."""
+    for plan in plans:
+        src_arg = source
+        if plan.frame_range:
+            s, e = plan.frame_range
+            src_arg = core.lsmas.LWLibavSource(source)[s:e]
+        msg = plan.encode_type
+        if plan.seg_idx is not None:
+            msg = f"{msg} seg{plan.seg_idx}"
+        rpChecker(src_arg, plan.output, subtitle=plan.subtitle, subrender=ctx.sub, message=msg, output=plan.output + '.rpc.txt')
+
+
+def _torrent_plans(ctx, plans):
+    for plan in plans:
+        makeTorrent(ctx.mktorrent_path, plan.output, ctx.trackers)
+
+
+def _run_pipeline(ctx, source, last, last2, log_fh):
+    """End-to-end encode for one source path: validate, subset fonts,
+    extract audio, plan segments, then encode/mux/rpc/torrent each
+    segment. Cleans up intermediate files at the end if ctx.delFiles."""
+    chap = ctx.chapter
+    _validate_source_path(ctx, source, chap)
+    source_dir = os.path.dirname(source) or '.'
+    base_in_name = os.path.basename(source).removesuffix(ctx.extSource)
+    resolved_font_out_dir = _subset_fonts_if_needed(ctx, source, source_dir, log_fh)
+    file2del = []
+    flac_audio, m4a_audio, src_audio_file = _extract_audio(ctx, source, file2del, log_fh)
+    for seg in _compute_segments(ctx.clip_frames, last):
+        seg_idx, start, end, astart, aend = seg
+        plans = _build_plans_for_segment(
+            ctx, source, source_dir, base_in_name, last, last2,
+            flac_audio, m4a_audio, src_audio_file, resolved_font_out_dir,
+            chap, file2del, log_fh,
+            seg_idx, start, end, astart, aend,
+        )
+        _run_encoders(plans, log_fh)
+        _mux_plans(plans, log_fh, file2del)
+        if ctx.rpc:
+            _rpc_plans(ctx, plans, source)
+        if ctx.create_torrent:
+            _torrent_plans(ctx, plans)
+    if ctx.delFiles:
+        for f in file2del:
+            if os.path.exists(f):
+                os.remove(f)
+
+
 def _normalize_for_log(text):
     """Strip ANSI escapes and turn bare \\r into \\n so progress-bar output is readable in the log."""
     return _BARE_CR_RE.sub('\n', _ANSI_RE.sub('', text))
@@ -535,180 +774,28 @@ def encodeProcess(
 
     def decorator(func):
         def wrapper(*args, **kw):
-            chap = chapter
-            log_fh = open(log_file, 'a', encoding='utf-8', buffering=1) if log_file else None
+            source = args[0]
+            log_fh = open(ctx.log_file, 'a', encoding='utf-8', buffering=1) if ctx.log_file else None
             _saved_stdout = sys.stdout
             if log_fh:
                 sys.stdout = _Tee(_saved_stdout, _LogStream(log_fh))
-            source = args[0]
-            if not source.endswith(extSource):
-                raise FileNotFoundError(f'Source file extention doesn\'t match. It should have been {extSource}')
-            if chap:
-                chapter_txt = source.removesuffix(extSource) + '.txt'
-                if not os.path.exists(chapter_txt):
-                    raise FileNotFoundError(f'chapter=True but chapter file not found: {chapter_txt}')
-            source_dir = os.path.dirname(source) or '.'
-            base_in_name = os.path.basename(source)[:-len(extSource)]
-            resolved_fonts_dir = fonts_dir if fonts_dir else os.path.join(source_dir, 'fonts')
-            resolved_font_out_dir = font_out_dir if font_out_dir else source.removesuffix(extSource) + '-font-output'
-            if 'HEVC' in encodeTypes and subtitles_info:
-                subtitle_paths = []
-                for sub_cfg in subtitles_info:
-                    verName = SUB_TYPE_TO_VERNAME[sub_cfg.get("type")]
-                    sp = source.removesuffix(extSource) + f'.{verName}.ass'
-                    if not os.path.exists(sp):
-                        raise FileNotFoundError(f"Subtitle file missing: {sp}")
-                    subtitle_paths.append(sp)
-                subsetFonts(subtitle_paths, resolved_fonts_dir, resolved_font_out_dir, assfontsubset_path)
-            file2del = []
-            # 抽取音频
-            flac_audio = None  # used by BD HEVC outputs
-            m4a_audio = None   # used by 264 outputs and by Web HEVC
-            if sourceType == 'Web':
-                m4a_audio = source.removesuffix(extSource) + '.m4a'
-                _log_run([ffmpeg_path, '-i', source, '-c:a', 'copy', '-vn', m4a_audio], log_fh, check=True)
-                if not os.path.exists(m4a_audio):
-                    raise FileNotFoundError(f"Failed to create {m4a_audio}")
-                file2del.append(m4a_audio)
-            elif sourceType == 'BD':
-                flac_path = source.removesuffix(extSource) + '.flac'
-                m4a_path = source.removesuffix(extSource) + '.m4a'
-                has_hevc = 'HEVC' in encodeTypes
-                has_264 = any(t != 'HEVC' for t in encodeTypes)
-                if has_hevc:
-                    _log_run([eac3to_path, source, f'{bd_audio_track}:', flac_path], log_fh, check=True)
-                    if not os.path.exists(flac_path):
-                        raise FileNotFoundError(f"Failed to create {flac_path}")
-                    file2del.append(flac_path)
-                    flac_audio = flac_path
-                if has_264:
-                    _ffmpeg_to_qaac(['-i', source], m4a_path, ffmpeg_path, qaac_path, log_fh)
-                    if not os.path.exists(m4a_path):
-                        raise FileNotFoundError(f"Failed to create {m4a_path}")
-                    file2del.append(m4a_path)
-                    m4a_audio = m4a_path
-            # For clip mode (HEVC-only by validation)
-            src_audio_file = flac_audio if flac_audio else m4a_audio
-
-            def audio_for(encode_type):
-                """Pick the audio file appropriate to a given encode type."""
-                if encode_type == 'HEVC' and sourceType == 'BD' and flac_audio:
-                    return flac_audio
-                return m4a_audio
-            last: vs.VideoNode = func(*args, **kw)
-            needs_last2 = any(t != 'HEVC' for t in encodeTypes)
-            last2 = down8d(last) if needs_last2 else None
-            # Build the segment list. Non-clip is modelled as one segment
-            # with seg_idx=None so the same loop body handles both modes.
-            if clip_frames:
-                length = last.num_frames
-                pieces = []
-                audios = []
-                lastI = 0
-                for i in clip_frames:
-                    if i > length:
-                        break
-                    if lastI != i:
-                        pieces.append((lastI, i))
-                        audios.append((lastI*last.fps_den/last.fps_num, i*last.fps_den/last.fps_num))
-                    lastI = i
-                if lastI < length:
-                    pieces.append((lastI, length))
-                    audios.append((lastI*last.fps_den/last.fps_num, length*last.fps_den/last.fps_num))
-                segments = [
-                    (idx, pieces[idx][0], pieces[idx][1], audios[idx][0], audios[idx][1])
-                    for idx in range(len(pieces))
-                ]
-            else:
-                segments = [(None, None, None, None, None)]
-
-            # Per-segment: cut audio (if clip) -> build plans -> encode in
-            # parallel -> mux -> rpc -> torrent. Cleanup runs after the
-            # last segment.
-            for seg_idx, start, end, astart, aend in segments:
-                is_clip = seg_idx is not None
-                plans_for_seg = []
-                for encode_type in encodeTypes:
-                    if is_clip:
-                        is_lossless = (sourceType == 'BD' and encode_type == 'HEVC')
-                        seg_audio = f"{source.removesuffix(extSource)}{_seg_suffix(seg_idx, padded=True)}{'.flac' if is_lossless else '.m4a'}"
-                        _cut_audio(ctx, src_audio_file, seg_audio, astart, aend, is_lossless, log_fh)
-                        file2del.append(seg_audio)
-                        audio_file = seg_audio
-                        video_clip = last[start:end].fmtc.bitdepth(bits=10, dmode=8, patsize=64)
-                        verName = None
-                    else:
-                        audio_file = audio_for(encode_type)
-                        if encode_type == 'HEVC':
-                            video_clip = last.fmtc.bitdepth(bits=10, dmode=8, patsize=64)
-                            verName = None
-                        else:
-                            verName = SUB_TYPE_TO_VERNAME[encode_type]
-                            ass_path = source.removesuffix(extSource) + f'.{verName}.ass'
-                            if not os.path.isfile(ass_path):
-                                raise FileNotFoundError(f'Your subtitle files are not ready yet!\nMissing {ass_path}')
-                            video_clip = sub(last2, ass_path)
-                    plan = _build_encode_plan(
-                        ctx, encode_type, video_clip, audio_file, source, source_dir, base_in_name,
-                        chap=chap, font_out_dir=resolved_font_out_dir, verName=verName,
-                        is_clip=is_clip, seg_idx=seg_idx,
-                    )
-                    if is_clip:
-                        plan.frame_range = (start, end)
-                        plan.seg_idx = seg_idx
-                        plan.seg_audio = seg_audio
-                    plans_for_seg.append(plan)
-
-                # Spin up encoders and feed them in parallel.
-                encodes = [
-                    _log_popen(plan.encode_cmd, log_fh, stdin=subprocess.PIPE, shell=True)
-                    for plan in plans_for_seg
-                ]
-                dual_out.multiple_outputs([p.video for p in plans_for_seg], [e.stdin for e in encodes])
-                for e in encodes:
-                    if log_fh:
-                        e.stdin.close()
-                        e.wait()
-                        if hasattr(e, '_log_thread'):
-                            e._log_thread.join()
-                    else:
-                        e.communicate()
-                for i, e in enumerate(encodes):
-                    if e.returncode != 0:
-                        raise RuntimeError(f"Encoder {i} ({plans_for_seg[i].encode_type}) exited with code {e.returncode}")
-
-                # Mux each plan's mute video + audio (+ subs/fonts/chap when applicable).
-                for plan in plans_for_seg:
-                    _log_run(plan.mux_cmd, log_fh)
-                    if not os.path.exists(plan.output):
-                        raise FileNotFoundError(f"Failed to create {plan.output}")
-                    file2del.append(plan.mute_video)
-
-                if rpc:
-                    for plan in plans_for_seg:
-                        src_arg = source
-                        if plan.frame_range:
-                            s, e = plan.frame_range
-                            src_arg = core.lsmas.LWLibavSource(source)[s:e]
-                        msg = plan.encode_type
-                        if plan.seg_idx is not None:
-                            msg = f"{msg} seg{plan.seg_idx}"
-                        rpChecker(src_arg, plan.output, subtitle=plan.subtitle, subrender=sub, message=msg, output=plan.output + '.rpc.txt')
-                if create_torrent:
-                    for plan in plans_for_seg:
-                        makeTorrent(mktorrent_path, plan.output, trackers)
-
-            # 收尾
-            if delFiles:
-                for f in file2del:
-                    if os.path.exists(f):
-                        os.remove(f)
-            del last
-            del last2
-            gc.collect()
-            if log_fh:
-                sys.stdout = _saved_stdout
-                log_fh.close()
+            try:
+                # Validate before calling func() so a bad source path
+                # doesn't waste a (potentially slow) VS source filter init.
+                _validate_source_path(ctx, source, ctx.chapter)
+                last: vs.VideoNode = func(*args, **kw)
+                needs_last2 = any(t != 'HEVC' for t in ctx.encodeTypes)
+                last2 = down8d(last) if needs_last2 else None
+                try:
+                    _run_pipeline(ctx, source, last, last2, log_fh)
+                finally:
+                    del last
+                    del last2
+                    gc.collect()
+            finally:
+                if log_fh:
+                    sys.stdout = _saved_stdout
+                    log_fh.close()
         return wrapper
     return decorator
 
