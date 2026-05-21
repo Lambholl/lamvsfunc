@@ -539,6 +539,7 @@ def encodeProcess(
                             )
                         params['frame_range'] = (start, end)
                         params['seg_idx'] = seg_idx
+                        params['seg_audio'] = seg_audio
                         segment_params.append(params)
 
                     # 启动本段编码器
@@ -568,19 +569,6 @@ def encodeProcess(
                         if not os.path.exists(params['output']):
                             raise FileNotFoundError(f"Failed to create {params['output']}")
                         file2del.append(params['mute_video'])
-
-                    # 分段级删除临时文件（只删除本段产生的临时文件，主音频等全局文件保留至最后）
-                    if delFiles:
-                        for params in segment_params:
-                            seg_files = []
-                            if params.get('mute_video'):
-                                seg_files.append(params['mute_video'])
-                            # seg audio names were appended into file2del earlier; try to remove them too
-                            seg_audio_name = f"{source[:-len(extSource)]}.seg{seg_idx}{'.flac' if (sourceType == 'BD' and 'HEVC' in encodeTypes) else '.m4a'}"
-                            seg_files.append(seg_audio_name)
-                            for f in seg_files:
-                                if os.path.exists(f):
-                                    os.remove(f)
 
                     # RPC 校验与种子（按段即时产出）
                     if rpc:
