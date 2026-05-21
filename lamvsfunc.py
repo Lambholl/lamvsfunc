@@ -216,7 +216,6 @@ def encodeProcess(
     log_file: None|str=None,
     audio_language='jpn',
     bd_audio_track=2,
-    cut_audio_copy=False,
     param_x264='"{0}" --demuxer y4m --preset veryslow --profile high --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 --chromaloc 2 -o "{1}.mp4" -',
     param_x265='"{0}" --y4m -D 10 --preset slower --crf 18 --colorprim bt709 --transfer bt709 --colormatrix bt709 --range limited --chromaloc 2 -o "{1}.mp4" -'
 ):
@@ -277,20 +276,14 @@ def encodeProcess(
     # 音频切割
     def cut_audio(src_audio, out_audio, start_sec, end_sec, is_lossless, ffmpeg_path, qaac_path, log_fh=None):
         if is_lossless:
-            # FLAC: re-encode is sample-accurate. Stream copy is faster but
-            # quantizes to FLAC frame boundaries (~85 ms drift).
-            if cut_audio_copy:
-                cmd = [ffmpeg_path, '-y', '-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio, '-vn', '-c:a', 'copy', out_audio]
-            else:
-                cmd = [ffmpeg_path, '-y', '-i', src_audio, '-ss', str(start_sec), '-to', str(end_sec), '-vn', '-acodec', 'flac', out_audio]
+            cmd = [ffmpeg_path, '-y', '-i', src_audio, '-ss', str(start_sec), '-to', str(end_sec), '-vn', '-acodec', 'flac', out_audio]
             _log_run(cmd, log_fh, check=True)
             return
-        # AAC via ffmpeg-decode -> qaac-encode pipe; no temp wav on disk.
+        # AAC via ffmpeg-decode -> qaac-encode pipe
         # CAVEAT: AAC carries ~21 ms of encoder priming plus trailing padding
         # per encoded segment. Re-stitching segments produces audible seams.
-        # Clip mode is HEVC-only by design to avoid this; if you extend clip
-        # to 264, plan a real gapless solution (raw AAC + edit-list muxing)
-        # rather than reusing cut_audio.
+        # Clip mode is HEVC-only is not designed to avoid this, but to avoid
+        # sub rending. 'Cause web mode would cut as well.
         ffmpeg_proc = subprocess.Popen(
             [ffmpeg_path, '-y', '-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio, '-vn', '-f', 'wav', '-'],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -318,7 +311,7 @@ def encodeProcess(
     def build_encode_params(
         encode_type, video_clip, audio_file, source, extSource, base_in_name, source_dir,
         out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-        chapter, subtitles_info, font_out_dir, video_title, subrender, verName=None, is_clip=False, seg_idx=None
+        chapter, subtitles_info, font_out_dir, video_title, verName=None, is_clip=False, seg_idx=None
     ):
         params = {}
         if encode_type == 'HEVC':
@@ -437,7 +430,7 @@ def encodeProcess(
                 subsetFonts(subtitle_paths, resolved_fonts_dir, resolved_font_out_dir, assfontsubset_path)
             file2del = []
             # 抽取音频
-            flac_audio = None  # used by HEVC outputs
+            flac_audio = None  # used by BD HEVC outputs
             m4a_audio = None   # used by 264 outputs and by Web HEVC
             if sourceType == 'Web':
                 m4a_audio = source[:-len(extSource)] + '.m4a'
@@ -486,12 +479,12 @@ def encodeProcess(
                         raise FileNotFoundError(f"Failed to create {m4a_path}")
                     file2del.append(m4a_path)
                     m4a_audio = m4a_path
-            # For clip mode (HEVC-only by validation) the segment cut input is always flac.
+            # For clip mode (HEVC-only by validation)
             src_audio_file = flac_audio if flac_audio else m4a_audio
 
             def audio_for(encode_type):
                 """Pick the audio file appropriate to a given encode type."""
-                if encode_type == 'HEVC' and flac_audio:
+                if encode_type == 'HEVC' and sourceType == 'BD' and flac_audio:
                     return flac_audio
                 return m4a_audio
             last: vs.VideoNode = func(*args, **kw)
@@ -527,7 +520,7 @@ def encodeProcess(
                             params = build_encode_params(
                                 encode_type, video_clip, seg_audio, source, extSource, base_in_name, source_dir,
                                 out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-                                False, subtitles_info, resolved_font_out_dir, video_title, subrender, None, True, seg_idx
+                                False, subtitles_info, resolved_font_out_dir, video_title, None, True, seg_idx
                             )
                         else:
                             verName = {'CHS': 'sc', 'CHT': 'tc', 'JPSC': 'jpsc', 'JPTC': 'jptc'}[encode_type]
@@ -535,7 +528,7 @@ def encodeProcess(
                             params = build_encode_params(
                                 encode_type, video_clip, seg_audio, source, extSource, base_in_name, source_dir,
                                 out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-                                False, subtitles_info, resolved_font_out_dir, video_title, subrender, verName, True, seg_idx
+                                False, subtitles_info, resolved_font_out_dir, video_title, verName, True, seg_idx
                             )
                         params['frame_range'] = (start, end)
                         params['seg_idx'] = seg_idx
@@ -597,7 +590,7 @@ def encodeProcess(
                         params = build_encode_params(
                             encode_type, video_clip, audio_path, source, extSource, base_in_name, source_dir,
                             out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-                            chapter, subtitles_info, resolved_font_out_dir, video_title, subrender
+                            chapter, subtitles_info, resolved_font_out_dir, video_title
                         )
                     else:
                         verName = {'CHS': 'sc', 'CHT': 'tc', 'JPSC': 'jpsc', 'JPTC': 'jptc'}[encode_type]
@@ -607,7 +600,7 @@ def encodeProcess(
                         params = build_encode_params(
                             encode_type, video_clip, audio_path, source, extSource, base_in_name, source_dir,
                             out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-                            chapter, subtitles_info, resolved_font_out_dir, video_title, subrender, verName
+                            chapter, subtitles_info, resolved_font_out_dir, video_title, verName
                         )
                     encodeParamsList.append(params)
             # 编码与封装
@@ -637,20 +630,20 @@ def encodeProcess(
                 for f in file2del:
                     if os.path.exists(f):
                         os.remove(f)
-            if not clip_frames and rpc:
-                for params in encodeParamsList:
-                    src_arg = source
-                    if params.get('frame_range'):
-                        s, e = params['frame_range']
-                        src_arg = core.lsmas.LWLibavSource(source)[s:e]
-                    msg = params['encode_type']
-                    if params.get('seg_idx') is not None:
-                        msg = f"{msg} seg{params['seg_idx']}"
-                    rpChecker(src_arg, params['output'], subtitle=params['subtitle'], subrender=sub, message=msg, output=params['output'] + '.rpc.txt')
-            if not clip_frames and create_torrent:
-                for params in encodeParamsList:
-                    makeTorrent(mktorrent_path, params['output'], trackers)
             if not clip_frames:
+                if rpc:
+                    for params in encodeParamsList:
+                        src_arg = source
+                        if params.get('frame_range'):
+                            s, e = params['frame_range']
+                            src_arg = core.lsmas.LWLibavSource(source)[s:e]
+                        msg = params['encode_type']
+                        if params.get('seg_idx') is not None:
+                            msg = f"{msg} seg{params['seg_idx']}"
+                        rpChecker(src_arg, params['output'], subtitle=params['subtitle'], subrender=sub, message=msg, output=params['output'] + '.rpc.txt')
+                if create_torrent:
+                    for params in encodeParamsList:
+                        makeTorrent(mktorrent_path, params['output'], trackers)
                 del encodes
             del last
             del last2
