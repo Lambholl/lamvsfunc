@@ -29,6 +29,18 @@ FONT_MIME_TYPES = {
 FONT_EXTS = frozenset(FONT_MIME_TYPES)
 
 
+def _seg_suffix(seg_idx, *, padded):
+    """Per-segment filename suffix, or '' when seg_idx is None.
+
+    HEVC clip outputs use width-2 zero padding so seg00..seg10 sort
+    correctly; the non-HEVC mp4 path keeps the bare integer to stay
+    backwards-compatible with existing output filenames.
+    """
+    if seg_idx is None:
+        return ''
+    return f'.seg{seg_idx:0>2}' if padded else f'.seg{seg_idx}'
+
+
 def _normalize_for_log(text):
     """Strip ANSI escapes and turn bare \\r into \\n so progress-bar output is readable in the log."""
     return _BARE_CR_RE.sub('\n', _ANSI_RE.sub('', text))
@@ -342,16 +354,17 @@ def encodeProcess(
     ):
         params = {}
         if encode_type == 'HEVC':
-            mute_video = f"{source[:-len(extSource)]}{f'.seg{seg_idx:0>2}' if is_clip else ''}.mute"
+            seg = _seg_suffix(seg_idx if is_clip else None, padded=True)
+            mute_video = f"{source.removesuffix(extSource)}{seg}.mute"
             if (out_name_templates) and (encode_type in out_name_templates):
                 custom_name = out_name_templates[encode_type].format(base_in_name)
                 if not custom_name.lower().endswith('.mkv'):
                     custom_name += '.mkv'
                 if is_clip:
-                    custom_name = custom_name[:-4] + f'.seg{seg_idx:0>2}.mkv'
+                    custom_name = custom_name[:-4] + f'{seg}.mkv'
                 output_mkv = os.path.join(source_dir, custom_name)
             else:
-                output_mkv = f"{source[:-len(extSource)]}{f'.seg{seg_idx:0>2}' if is_clip else ''}.hevc.mkv"
+                output_mkv = f"{source.removesuffix(extSource)}{seg}.hevc.mkv"
             mux_cmd = [mkvmerge_path, '--output', output_mkv]
             if video_title:
                 mux_cmd.extend(['--title',  video_title.format(base_in_name)])
@@ -365,7 +378,7 @@ def encodeProcess(
             if subtitles_info and not is_clip:
                 for sub_cfg in subtitles_info:
                     sub_verName = SUB_TYPE_TO_VERNAME[sub_cfg.get("type")]
-                    sub_file_path = source[:-len(extSource)] + f'.{sub_verName}.ass'
+                    sub_file_path = source.removesuffix(extSource) + f'.{sub_verName}.ass'
                     mux_cmd.extend([
                         "--language",
                         f"0:{sub_cfg.get('language', 'chi')}",
@@ -390,7 +403,7 @@ def encodeProcess(
             if chapter and not is_clip:
                 mux_cmd.extend([
                     '--chapter-language', 'en', '--chapters',
-                    source[:-len(extSource)] + '.txt'
+                    source.removesuffix(extSource) + '.txt'
                 ])
             params = {
                 'encode_type': encode_type,
@@ -404,27 +417,28 @@ def encodeProcess(
         else:
             if not verName:
                 raise ValueError('verName required for non-HEVC')
+            seg = _seg_suffix(seg_idx if is_clip else None, padded=False)
             if (out_name_templates) and (encode_type in out_name_templates):
                 custom_name = out_name_templates[encode_type].format(base_in_name)
                 if not custom_name.lower().endswith('.mp4'):
                     custom_name += '.mp4'
                 if is_clip:
-                    custom_name = custom_name[:-4] + f'.seg{seg_idx}.mp4'
+                    custom_name = custom_name[:-4] + f'{seg}.mp4'
                 output_mp4 = os.path.join(source_dir, custom_name)
             else:
-                output_mp4 = f"{source[:-len(extSource)]}{f'.seg{seg_idx}' if is_clip else ''}.{verName}.mp4"
-            mute_stem = f"{source[:-len(extSource)]}{f'.seg{seg_idx}' if is_clip else ''}.mute.{verName}"
+                output_mp4 = f"{source.removesuffix(extSource)}{seg}.{verName}.mp4"
+            mute_stem = f"{source.removesuffix(extSource)}{seg}.mute.{verName}"
             mute_x264 = f"{mute_stem}.mp4"
             mux_cmd = [mp4box_path, '-add', mute_x264, '-add', audio_file, '-new', output_mp4]
             if chapter and not is_clip:
-                mux_cmd = mux_cmd[:-2] + ['-chap', source[:-len(extSource)] + '.txt'] + mux_cmd[-2:]
+                mux_cmd = mux_cmd[:-2] + ['-chap', source.removesuffix(extSource) + '.txt'] + mux_cmd[-2:]
             params = {
                 'encode_type': encode_type,
                 'video': video_clip,
                 'encode_cmd': param_x264.format(x264_path, mute_stem),
                 'mux_cmd': mux_cmd,
                 'output': output_mp4,
-                'subtitle': f"{source[:-len(extSource)]}.{verName}.ass",
+                'subtitle': f"{source.removesuffix(extSource)}.{verName}.ass",
                 'mute_video': mute_x264,
             }
         return params
@@ -440,18 +454,18 @@ def encodeProcess(
             if not source.endswith(extSource):
                 raise FileNotFoundError(f'Source file extention doesn\'t match. It should have been {extSource}')
             if chap:
-                chapter_txt = source[:-len(extSource)] + '.txt'
+                chapter_txt = source.removesuffix(extSource) + '.txt'
                 if not os.path.exists(chapter_txt):
                     raise FileNotFoundError(f'chapter=True but chapter file not found: {chapter_txt}')
             source_dir = os.path.dirname(source) or '.'
             base_in_name = os.path.basename(source)[:-len(extSource)]
             resolved_fonts_dir = fonts_dir if fonts_dir else os.path.join(source_dir, 'fonts')
-            resolved_font_out_dir = font_out_dir if font_out_dir else source[:-len(extSource)] + '-font-output'
+            resolved_font_out_dir = font_out_dir if font_out_dir else source.removesuffix(extSource) + '-font-output'
             if 'HEVC' in encodeTypes and subtitles_info:
                 subtitle_paths = []
                 for sub_cfg in subtitles_info:
                     verName = SUB_TYPE_TO_VERNAME[sub_cfg.get("type")]
-                    sp = source[:-len(extSource)] + f'.{verName}.ass'
+                    sp = source.removesuffix(extSource) + f'.{verName}.ass'
                     if not os.path.exists(sp):
                         raise FileNotFoundError(f"Subtitle file missing: {sp}")
                     subtitle_paths.append(sp)
@@ -461,14 +475,14 @@ def encodeProcess(
             flac_audio = None  # used by BD HEVC outputs
             m4a_audio = None   # used by 264 outputs and by Web HEVC
             if sourceType == 'Web':
-                m4a_audio = source[:-len(extSource)] + '.m4a'
+                m4a_audio = source.removesuffix(extSource) + '.m4a'
                 _log_run([ffmpeg_path, '-i', source, '-c:a', 'copy', '-vn', m4a_audio], log_fh, check=True)
                 if not os.path.exists(m4a_audio):
                     raise FileNotFoundError(f"Failed to create {m4a_audio}")
                 file2del.append(m4a_audio)
             elif sourceType == 'BD':
-                flac_path = source[:-len(extSource)] + '.flac'
-                m4a_path = source[:-len(extSource)] + '.m4a'
+                flac_path = source.removesuffix(extSource) + '.flac'
+                m4a_path = source.removesuffix(extSource) + '.m4a'
                 has_hevc = 'HEVC' in encodeTypes
                 has_264 = any(t != 'HEVC' for t in encodeTypes)
                 if has_hevc:
@@ -517,7 +531,7 @@ def encodeProcess(
                     # 生成本段参数并切音频
                     for encode_type in encodeTypes:
                         is_lossless = (sourceType == 'BD' and encode_type == 'HEVC')
-                        seg_audio = f"{source[:-len(extSource)]}.seg{seg_idx:0>2}{'.flac' if is_lossless else '.m4a'}"
+                        seg_audio = f"{source.removesuffix(extSource)}{_seg_suffix(seg_idx, padded=True)}{'.flac' if is_lossless else '.m4a'}"
                         cut_audio(src_audio_file, seg_audio, astart, aend, is_lossless, ffmpeg_path, qaac_path, log_fh)
                         file2del.append(seg_audio)
                         video_clip = last[start:end].fmtc.bitdepth(bits=10, dmode=8, patsize=64)
@@ -590,9 +604,9 @@ def encodeProcess(
                         )
                     else:
                         verName = SUB_TYPE_TO_VERNAME[encode_type]
-                        if not os.path.isfile(source[:-len(extSource)] + f'.{verName}.ass'):
-                            raise FileNotFoundError('Your subtitle files are not ready yet!\nMissing ' + source[:-len(extSource)] + f'.{verName}.ass')
-                        video_clip = sub(last2, source[:-len(extSource)] + f'.{verName}.ass')
+                        if not os.path.isfile(source.removesuffix(extSource) + f'.{verName}.ass'):
+                            raise FileNotFoundError('Your subtitle files are not ready yet!\nMissing ' + source.removesuffix(extSource) + f'.{verName}.ass')
+                        video_clip = sub(last2, source.removesuffix(extSource) + f'.{verName}.ass')
                         params = build_encode_params(
                             encode_type, video_clip, audio_path, source, extSource, base_in_name, source_dir,
                             out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
