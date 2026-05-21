@@ -15,6 +15,19 @@ subsetFonts
 _ANSI_RE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 _BARE_CR_RE = re.compile(r'\r(?!\n)')
 
+KNOWN_ENCODE_TYPES = {'CHS', 'CHT', 'JPSC', 'JPTC', 'HEVC'}
+KNOWN_SUB_TYPES = {'CHS', 'CHT', 'JPSC', 'JPTC'}
+SUB_TYPE_TO_VERNAME = {'CHS': 'sc', 'CHT': 'tc', 'JPSC': 'jpsc', 'JPTC': 'jptc'}
+
+FONT_MIME_TYPES = {
+    '.ttf': 'application/x-truetype-font',
+    '.ttc': 'application/x-truetype-font',
+    '.otf': 'application/vnd.ms-opentype',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+}
+FONT_EXTS = frozenset(FONT_MIME_TYPES)
+
 
 def _normalize_for_log(text):
     """Strip ANSI escapes and turn bare \\r into \\n so progress-bar output is readable in the log."""
@@ -141,14 +154,7 @@ def down8d(clip):
 
 def getMimeType(ext: str) -> str:
     """Map font extensions to MKV attachment MIME types."""
-    ext_map = {
-        '.ttf': 'application/x-truetype-font',
-        '.ttc': 'application/x-truetype-font',
-        '.otf': 'application/vnd.ms-opentype',
-        '.woff': 'font/woff',
-        '.woff2': 'font/woff2',
-    }
-    return ext_map.get(ext.lower(), 'application/octet-stream')
+    return FONT_MIME_TYPES.get(ext.lower(), 'application/octet-stream')
 
 
 def subsetFonts(sub_paths: list[str],
@@ -234,8 +240,6 @@ def encodeProcess(
         chapter (bool): Default False on Web and True on BD, accept txt files with the same filenames as source files
     """
     # 参数前置校验
-    KNOWN_ENCODE_TYPES = {'CHS', 'CHT', 'JPSC', 'JPTC', 'HEVC'}
-    KNOWN_SUB_TYPES = {'CHS', 'CHT', 'JPSC', 'JPTC'}
     if sourceType not in ('Web', 'BD'):
         raise ValueError(f"sourceType must be 'Web' or 'BD', got {sourceType!r}")
     if not encodeTypes:
@@ -337,7 +341,7 @@ def encodeProcess(
             # 字幕和字体（仅非分段）
             if subtitles_info and not is_clip:
                 for sub_cfg in subtitles_info:
-                    sub_verName = {'CHS': 'sc', 'CHT': 'tc', 'JPSC': 'jpsc', 'JPTC': 'jptc'}[sub_cfg.get("type")]
+                    sub_verName = SUB_TYPE_TO_VERNAME[sub_cfg.get("type")]
                     sub_file_path = source[:-len(extSource)] + f'.{sub_verName}.ass'
                     mux_cmd.extend([
                         "--language",
@@ -353,7 +357,7 @@ def encodeProcess(
                         font_path = os.path.join(font_out_dir, filename)
                         if os.path.isfile(font_path):
                             _, ext_font = os.path.splitext(filename)
-                            if ext_font.lower() in ['.ttf', '.ttc', '.otf', '.woff', '.woff2']:
+                            if ext_font.lower() in FONT_EXTS:
                                 mux_cmd.extend([
                                     "--attachment-mime-type",
                                     getMimeType(ext_font),
@@ -423,7 +427,7 @@ def encodeProcess(
             if 'HEVC' in encodeTypes and subtitles_info:
                 subtitle_paths = []
                 for sub_cfg in subtitles_info:
-                    verName = {'CHS': 'sc', 'CHT': 'tc', 'JPSC': 'jpsc', 'JPTC': 'jptc'}[sub_cfg.get("type")]
+                    verName = SUB_TYPE_TO_VERNAME[sub_cfg.get("type")]
                     sp = source[:-len(extSource)] + f'.{verName}.ass'
                     if not os.path.exists(sp):
                         raise FileNotFoundError(f"Subtitle file missing: {sp}")
@@ -586,7 +590,7 @@ def encodeProcess(
                             chap, subtitles_info, resolved_font_out_dir, video_title
                         )
                     else:
-                        verName = {'CHS': 'sc', 'CHT': 'tc', 'JPSC': 'jpsc', 'JPTC': 'jptc'}[encode_type]
+                        verName = SUB_TYPE_TO_VERNAME[encode_type]
                         if not os.path.isfile(source[:-len(extSource)] + f'.{verName}.ass'):
                             raise FileNotFoundError('Your subtitle files are not ready yet!\nMissing ' + source[:-len(extSource)] + f'.{verName}.ass')
                         video_clip = sub(last2, source[:-len(extSource)] + f'.{verName}.ass')
