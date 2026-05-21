@@ -1,6 +1,6 @@
 import vapoursynth as vs
 from vapoursynth import core
-import dual_out, subprocess, os, gc, sys, threading, re, warnings
+import dual_out, subprocess, os, gc, sys, threading, re, warnings, dataclasses
 '''
 Functions:
 getSources
@@ -39,6 +39,46 @@ def _seg_suffix(seg_idx, *, padded):
     if seg_idx is None:
         return ''
     return f'.seg{seg_idx:0>2}' if padded else f'.seg{seg_idx}'
+
+
+@dataclasses.dataclass(frozen=True)
+class EncodeContext:
+    """Frozen snapshot of all encodeProcess parameters after validation.
+
+    Built once per @encodeProcess(...) decorator application. Passed to
+    helpers instead of long positional arg lists. Source-path-specific
+    state (the resolved source, base name, font output dir, etc.) lives
+    elsewhere — this captures only the configuration the user supplied.
+    """
+    sourceType: str
+    extSource: str
+    encodeTypes: list
+    sub: object
+    chapter: object
+    delFiles: bool
+    rpc: bool
+    fonts_dir: object
+    font_out_dir: object
+    subtitles_info: object
+    video_title: str
+    assfontsubset_path: str
+    out_name_templates: object
+    qaac_path: str
+    ffmpeg_path: str
+    x264_path: str
+    x265_path: str
+    mp4box_path: str
+    mkvmerge_path: str
+    eac3to_path: str
+    mktorrent_path: str
+    clip_frames: object
+    create_torrent: bool
+    trackers: object
+    log_file: object
+    audio_language: str
+    bd_audio_track: int
+    param_x264: str
+    param_x265: str
 
 
 def _normalize_for_log(text):
@@ -330,6 +370,38 @@ def encodeProcess(
         chapter = False
         create_torrent = False
 
+    ctx = EncodeContext(
+        sourceType=sourceType,
+        extSource=extSource,
+        encodeTypes=encodeTypes,
+        sub=sub,
+        chapter=chapter,
+        delFiles=delFiles,
+        rpc=rpc,
+        fonts_dir=fonts_dir,
+        font_out_dir=font_out_dir,
+        subtitles_info=subtitles_info,
+        video_title=video_title,
+        assfontsubset_path=assfontsubset_path,
+        out_name_templates=out_name_templates,
+        qaac_path=qaac_path,
+        ffmpeg_path=ffmpeg_path,
+        x264_path=x264_path,
+        x265_path=x265_path,
+        mp4box_path=mp4box_path,
+        mkvmerge_path=mkvmerge_path,
+        eac3to_path=eac3to_path,
+        mktorrent_path=mktorrent_path,
+        clip_frames=clip_frames,
+        create_torrent=create_torrent,
+        trackers=trackers,
+        log_file=log_file,
+        audio_language=audio_language,
+        bd_audio_track=bd_audio_track,
+        param_x264=param_x264,
+        param_x265=param_x265,
+    )
+
     # 音频切割
     def cut_audio(src_audio, out_audio, start_sec, end_sec, is_lossless, ffmpeg_path, qaac_path, log_fh=None):
         if is_lossless:
@@ -348,37 +420,36 @@ def encodeProcess(
 
     # 参数生成
     def build_encode_params(
-        encode_type, video_clip, audio_file, source, extSource, base_in_name, source_dir,
-        out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-        chapter, subtitles_info, font_out_dir, video_title, verName=None, is_clip=False, seg_idx=None
+        ctx, encode_type, video_clip, audio_file, source, source_dir, base_in_name,
+        chap, font_out_dir, verName=None, is_clip=False, seg_idx=None,
     ):
-        params = {}
+        source_noext = source.removesuffix(ctx.extSource)
         if encode_type == 'HEVC':
             seg = _seg_suffix(seg_idx if is_clip else None, padded=True)
-            mute_video = f"{source.removesuffix(extSource)}{seg}.mute"
-            if (out_name_templates) and (encode_type in out_name_templates):
-                custom_name = out_name_templates[encode_type].format(base_in_name)
+            mute_video = f"{source_noext}{seg}.mute"
+            if ctx.out_name_templates and encode_type in ctx.out_name_templates:
+                custom_name = ctx.out_name_templates[encode_type].format(base_in_name)
                 if not custom_name.lower().endswith('.mkv'):
                     custom_name += '.mkv'
                 if is_clip:
                     custom_name = custom_name[:-4] + f'{seg}.mkv'
                 output_mkv = os.path.join(source_dir, custom_name)
             else:
-                output_mkv = f"{source.removesuffix(extSource)}{seg}.hevc.mkv"
-            mux_cmd = [mkvmerge_path, '--output', output_mkv]
-            if video_title:
-                mux_cmd.extend(['--title',  video_title.format(base_in_name)])
+                output_mkv = f"{source_noext}{seg}.hevc.mkv"
+            mux_cmd = [ctx.mkvmerge_path, '--output', output_mkv]
+            if ctx.video_title:
+                mux_cmd.extend(['--title', ctx.video_title.format(base_in_name)])
             mute_hevc = f"{mute_video}.mp4"
             mux_cmd.extend([
                 '--language', '0:und', '--default-track', '0:yes',
-                mute_hevc, '--language', f'0:{audio_language}', '--default-track',
+                mute_hevc, '--language', f'0:{ctx.audio_language}', '--default-track',
                 '0:yes', audio_file
             ])
             # 字幕和字体（仅非分段）
-            if subtitles_info and not is_clip:
-                for sub_cfg in subtitles_info:
+            if ctx.subtitles_info and not is_clip:
+                for sub_cfg in ctx.subtitles_info:
                     sub_verName = SUB_TYPE_TO_VERNAME[sub_cfg.get("type")]
-                    sub_file_path = source.removesuffix(extSource) + f'.{sub_verName}.ass'
+                    sub_file_path = source_noext + f'.{sub_verName}.ass'
                     mux_cmd.extend([
                         "--language",
                         f"0:{sub_cfg.get('language', 'chi')}",
@@ -400,48 +471,46 @@ def encodeProcess(
                                     "--attach-file", font_path
                                 ])
             # 章节（仅非分段）
-            if chapter and not is_clip:
+            if chap and not is_clip:
                 mux_cmd.extend([
                     '--chapter-language', 'en', '--chapters',
-                    source.removesuffix(extSource) + '.txt'
+                    source_noext + '.txt'
                 ])
-            params = {
+            return {
                 'encode_type': encode_type,
                 'video': video_clip,
-                'encode_cmd': param_x265.format(x265_path, mute_video),
+                'encode_cmd': ctx.param_x265.format(ctx.x265_path, mute_video),
                 'mux_cmd': mux_cmd,
                 'output': output_mkv,
                 'subtitle': '',
                 'mute_video': mute_hevc,
             }
+        if not verName:
+            raise ValueError('verName required for non-HEVC')
+        seg = _seg_suffix(seg_idx if is_clip else None, padded=False)
+        if ctx.out_name_templates and encode_type in ctx.out_name_templates:
+            custom_name = ctx.out_name_templates[encode_type].format(base_in_name)
+            if not custom_name.lower().endswith('.mp4'):
+                custom_name += '.mp4'
+            if is_clip:
+                custom_name = custom_name[:-4] + f'{seg}.mp4'
+            output_mp4 = os.path.join(source_dir, custom_name)
         else:
-            if not verName:
-                raise ValueError('verName required for non-HEVC')
-            seg = _seg_suffix(seg_idx if is_clip else None, padded=False)
-            if (out_name_templates) and (encode_type in out_name_templates):
-                custom_name = out_name_templates[encode_type].format(base_in_name)
-                if not custom_name.lower().endswith('.mp4'):
-                    custom_name += '.mp4'
-                if is_clip:
-                    custom_name = custom_name[:-4] + f'{seg}.mp4'
-                output_mp4 = os.path.join(source_dir, custom_name)
-            else:
-                output_mp4 = f"{source.removesuffix(extSource)}{seg}.{verName}.mp4"
-            mute_stem = f"{source.removesuffix(extSource)}{seg}.mute.{verName}"
-            mute_x264 = f"{mute_stem}.mp4"
-            mux_cmd = [mp4box_path, '-add', mute_x264, '-add', audio_file, '-new', output_mp4]
-            if chapter and not is_clip:
-                mux_cmd = mux_cmd[:-2] + ['-chap', source.removesuffix(extSource) + '.txt'] + mux_cmd[-2:]
-            params = {
-                'encode_type': encode_type,
-                'video': video_clip,
-                'encode_cmd': param_x264.format(x264_path, mute_stem),
-                'mux_cmd': mux_cmd,
-                'output': output_mp4,
-                'subtitle': f"{source.removesuffix(extSource)}.{verName}.ass",
-                'mute_video': mute_x264,
-            }
-        return params
+            output_mp4 = f"{source_noext}{seg}.{verName}.mp4"
+        mute_stem = f"{source_noext}{seg}.mute.{verName}"
+        mute_x264 = f"{mute_stem}.mp4"
+        mux_cmd = [ctx.mp4box_path, '-add', mute_x264, '-add', audio_file, '-new', output_mp4]
+        if chap and not is_clip:
+            mux_cmd = mux_cmd[:-2] + ['-chap', source_noext + '.txt'] + mux_cmd[-2:]
+        return {
+            'encode_type': encode_type,
+            'video': video_clip,
+            'encode_cmd': ctx.param_x264.format(ctx.x264_path, mute_stem),
+            'mux_cmd': mux_cmd,
+            'output': output_mp4,
+            'subtitle': f"{source_noext}.{verName}.ass",
+            'mute_video': mute_x264,
+        }
 
     def decorator(func):
         def wrapper(*args, **kw):
@@ -536,9 +605,8 @@ def encodeProcess(
                         file2del.append(seg_audio)
                         video_clip = last[start:end].fmtc.bitdepth(bits=10, dmode=8, patsize=64)
                         params = build_encode_params(
-                            encode_type, video_clip, seg_audio, source, extSource, base_in_name, source_dir,
-                            out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-                            False, subtitles_info, resolved_font_out_dir, video_title, None, True, seg_idx
+                            ctx, encode_type, video_clip, seg_audio, source, source_dir, base_in_name,
+                            chap=False, font_out_dir=resolved_font_out_dir, is_clip=True, seg_idx=seg_idx,
                         )
                         params['frame_range'] = (start, end)
                         params['seg_idx'] = seg_idx
@@ -598,9 +666,8 @@ def encodeProcess(
                     if encode_type == 'HEVC':
                         video_clip = last.fmtc.bitdepth(bits=10, dmode=8, patsize=64)
                         params = build_encode_params(
-                            encode_type, video_clip, audio_path, source, extSource, base_in_name, source_dir,
-                            out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-                            chap, subtitles_info, resolved_font_out_dir, video_title
+                            ctx, encode_type, video_clip, audio_path, source, source_dir, base_in_name,
+                            chap=chap, font_out_dir=resolved_font_out_dir,
                         )
                     else:
                         verName = SUB_TYPE_TO_VERNAME[encode_type]
@@ -608,9 +675,8 @@ def encodeProcess(
                             raise FileNotFoundError('Your subtitle files are not ready yet!\nMissing ' + source.removesuffix(extSource) + f'.{verName}.ass')
                         video_clip = sub(last2, source.removesuffix(extSource) + f'.{verName}.ass')
                         params = build_encode_params(
-                            encode_type, video_clip, audio_path, source, extSource, base_in_name, source_dir,
-                            out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-                            chap, subtitles_info, resolved_font_out_dir, video_title, verName
+                            ctx, encode_type, video_clip, audio_path, source, source_dir, base_in_name,
+                            chap=chap, font_out_dir=resolved_font_out_dir, verName=verName,
                         )
                     encodeParamsList.append(params)
             # 编码与封装
