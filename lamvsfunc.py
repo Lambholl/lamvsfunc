@@ -126,6 +126,47 @@ def _log_popen(cmd, log_fh, **kw):
     return p
 
 
+def _ffmpeg_to_qaac(ffmpeg_input_args, out_audio, ffmpeg_path, qaac_path, log_fh):
+    """Decode audio with ffmpeg and pipe it through qaac to write AAC to out_audio.
+
+    ffmpeg_input_args is everything between the ffmpeg binary and the
+    trailing '-vn -f wav -' (typically just ['-i', src], or ['-ss', s,
+    '-to', e, '-i', src] for a slice). ffmpeg stderr is teed to the log
+    when log_fh is set so that codec banners and warnings still surface.
+    Raises RuntimeError on non-zero exit from either process.
+    """
+    ffmpeg_cmd = [ffmpeg_path, '-y', *ffmpeg_input_args, '-vn', '-f', 'wav', '-']
+    ffmpeg_proc = subprocess.Popen(
+        ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    qaac_proc = _log_popen(
+        [qaac_path, '-V', '127', '-', '-o', out_audio],
+        log_fh, stdin=ffmpeg_proc.stdout,
+    )
+    ffmpeg_proc.stdout.close()
+    stderr_tee = None
+    if log_fh:
+        stderr_tee = threading.Thread(
+            target=_tee_pipe,
+            args=(ffmpeg_proc.stderr, sys.__stdout__, _as_log_stream(log_fh)),
+            daemon=True,
+        )
+        stderr_tee.start()
+    if log_fh:
+        qaac_proc.wait()
+    else:
+        qaac_proc.communicate()
+    ffmpeg_proc.wait()
+    if stderr_tee:
+        stderr_tee.join()
+    if log_fh and hasattr(qaac_proc, '_log_thread'):
+        qaac_proc._log_thread.join()
+    if ffmpeg_proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg (wav pipe to qaac) exited with code {ffmpeg_proc.returncode}")
+    if qaac_proc.returncode != 0:
+        raise RuntimeError(f"qaac (AAC encode) exited with code {qaac_proc.returncode}")
+
+
 def getSources():
     """
     Get a list of file. 
@@ -283,33 +324,15 @@ def encodeProcess(
             cmd = [ffmpeg_path, '-y', '-i', src_audio, '-ss', str(start_sec), '-to', str(end_sec), '-vn', '-acodec', 'flac', out_audio]
             _log_run(cmd, log_fh, check=True)
             return
-        # AAC via ffmpeg-decode -> qaac-encode pipe
+        # AAC via ffmpeg-decode -> qaac-encode pipe.
         # CAVEAT: AAC carries ~21 ms of encoder priming plus trailing padding
         # per encoded segment. Re-stitching segments produces audible seams.
-        # Clip mode is HEVC-only is not designed to avoid this, but to avoid
-        # sub rending. 'Cause web mode would cut as well.
-        ffmpeg_proc = subprocess.Popen(
-            [ffmpeg_path, '-y', '-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio, '-vn', '-f', 'wav', '-'],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        # Clip mode being HEVC-only is not designed to avoid this, but to
+        # avoid sub rendering across the cut.
+        _ffmpeg_to_qaac(
+            ['-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio],
+            out_audio, ffmpeg_path, qaac_path, log_fh,
         )
-        qaac_proc = _log_popen(
-            [qaac_path, '-V', '127', '-', '-o', out_audio],
-            log_fh, stdin=ffmpeg_proc.stdout,
-        )
-        ffmpeg_proc.stdout.close()
-        if log_fh:
-            tee = threading.Thread(target=_tee_pipe, args=(ffmpeg_proc.stderr, sys.__stdout__, _as_log_stream(log_fh)), daemon=True)
-            tee.start()
-        qaac_proc.communicate() if not log_fh else qaac_proc.wait()
-        ffmpeg_proc.wait()
-        if log_fh:
-            tee.join()
-            if hasattr(qaac_proc, '_log_thread'):
-                qaac_proc._log_thread.join()
-        if ffmpeg_proc.returncode != 0:
-            raise RuntimeError(f"ffmpeg (cut_audio wav pipe) exited with code {ffmpeg_proc.returncode}")
-        if qaac_proc.returncode != 0:
-            raise RuntimeError(f"qaac (cut_audio m4a) exited with code {qaac_proc.returncode}")
 
     # 参数生成
     def build_encode_params(
@@ -455,31 +478,7 @@ def encodeProcess(
                     file2del.append(flac_path)
                     flac_audio = flac_path
                 if has_264:
-                    # ffmpeg stdout -> qaac stdin; ffmpeg stderr is what we want to log
-                    ffmpeg_proc = subprocess.Popen(
-                        [ffmpeg_path, '-i', source, '-f', 'wav', '-vn', '-'],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                    )
-                    qaac_proc = _log_popen(
-                        [qaac_path, '-V', '127', '-', '-o', m4a_path],
-                        log_fh,
-                        stdin=ffmpeg_proc.stdout,
-                    )
-                    ffmpeg_proc.stdout.close()
-                    if log_fh:
-                        _tee_thread = threading.Thread(target=_tee_pipe, args=(ffmpeg_proc.stderr, sys.__stdout__, _as_log_stream(log_fh)), daemon=True)
-                        _tee_thread.start()
-                    qaac_proc.communicate() if not log_fh else qaac_proc.wait()
-                    ffmpeg_proc.wait()
-                    if log_fh:
-                        _tee_thread.join()
-                        if hasattr(qaac_proc, '_log_thread'):
-                            qaac_proc._log_thread.join()
-                    if ffmpeg_proc.returncode != 0:
-                        raise RuntimeError(f"ffmpeg (BD wav pipe) exited with code {ffmpeg_proc.returncode}")
-                    if qaac_proc.returncode != 0:
-                        raise RuntimeError(f"qaac (BD m4a) exited with code {qaac_proc.returncode}")
+                    _ffmpeg_to_qaac(['-i', source], m4a_path, ffmpeg_path, qaac_path, log_fh)
                     if not os.path.exists(m4a_path):
                         raise FileNotFoundError(f"Failed to create {m4a_path}")
                     file2del.append(m4a_path)
