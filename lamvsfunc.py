@@ -57,6 +57,121 @@ class EncodePlan:
     seg_audio: object = None
 
 
+def _cut_audio(ctx, src_audio, out_audio, start_sec, end_sec, is_lossless, log_fh):
+    """Extract a [start_sec, end_sec) slice of audio into out_audio.
+
+    Lossless (BD HEVC's flac path) uses ffmpeg stream-cut to flac.
+    Lossy (Web HEVC's m4a path) re-encodes through qaac. AAC carries
+    ~21 ms of priming + trailing padding per encoded segment, so the
+    rejoined audio at segment boundaries is not bit-perfect — clip mode
+    being HEVC-only does not avoid that, it avoids per-segment sub
+    rendering across the cut.
+    """
+    if is_lossless:
+        cmd = [ctx.ffmpeg_path, '-y', '-i', src_audio, '-ss', str(start_sec), '-to', str(end_sec), '-vn', '-acodec', 'flac', out_audio]
+        _log_run(cmd, log_fh, check=True)
+        return
+    _ffmpeg_to_qaac(
+        ['-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio],
+        out_audio, ctx.ffmpeg_path, ctx.qaac_path, log_fh,
+    )
+
+
+def _build_encode_plan(
+    ctx, encode_type, video_clip, audio_file, source, source_dir, base_in_name,
+    chap, font_out_dir, verName=None, is_clip=False, seg_idx=None,
+):
+    """Build one EncodePlan: the encoder shell command, the mux argv,
+    and the intermediate / output paths. HEVC goes through mkvmerge with
+    optional subtitle tracks + font attachments + chapters; non-HEVC
+    burns subtitles in via VS and muxes through MP4Box."""
+    source_noext = source.removesuffix(ctx.extSource)
+    if encode_type == 'HEVC':
+        seg = _seg_suffix(seg_idx if is_clip else None, padded=True)
+        mute_video = f"{source_noext}{seg}.mute"
+        if ctx.out_name_templates and encode_type in ctx.out_name_templates:
+            custom_name = ctx.out_name_templates[encode_type].format(base_in_name)
+            if not custom_name.lower().endswith('.mkv'):
+                custom_name += '.mkv'
+            if is_clip:
+                custom_name = custom_name[:-4] + f'{seg}.mkv'
+            output_mkv = os.path.join(source_dir, custom_name)
+        else:
+            output_mkv = f"{source_noext}{seg}.hevc.mkv"
+        mux_cmd = [ctx.mkvmerge_path, '--output', output_mkv]
+        if ctx.video_title:
+            mux_cmd.extend(['--title', ctx.video_title.format(base_in_name)])
+        mute_hevc = f"{mute_video}.mp4"
+        mux_cmd.extend([
+            '--language', '0:und', '--default-track', '0:yes',
+            mute_hevc, '--language', f'0:{ctx.audio_language}', '--default-track',
+            '0:yes', audio_file
+        ])
+        if ctx.subtitles_info and not is_clip:
+            for sub_cfg in ctx.subtitles_info:
+                sub_verName = SUB_TYPE_TO_VERNAME[sub_cfg.get("type")]
+                sub_file_path = source_noext + f'.{sub_verName}.ass'
+                mux_cmd.extend([
+                    "--language",
+                    f"0:{sub_cfg.get('language', 'chi')}",
+                    "--track-name",
+                    f"0:{sub_cfg.get('track_name', '')}",
+                    "--default-track",
+                    f"0:{'yes' if sub_cfg.get('is_default', False) else 'no'}",
+                    sub_file_path
+                ])
+            if font_out_dir and os.path.isdir(font_out_dir):
+                for filename in os.listdir(font_out_dir):
+                    font_path = os.path.join(font_out_dir, filename)
+                    if os.path.isfile(font_path):
+                        _, ext_font = os.path.splitext(filename)
+                        if ext_font.lower() in FONT_EXTS:
+                            mux_cmd.extend([
+                                "--attachment-mime-type",
+                                getMimeType(ext_font),
+                                "--attach-file", font_path
+                            ])
+        if chap and not is_clip:
+            mux_cmd.extend([
+                '--chapter-language', 'en', '--chapters',
+                source_noext + '.txt'
+            ])
+        return EncodePlan(
+            encode_type=encode_type,
+            video=video_clip,
+            encode_cmd=ctx.param_x265.format(ctx.x265_path, mute_video),
+            mux_cmd=mux_cmd,
+            output=output_mkv,
+            mute_video=mute_hevc,
+        )
+    if not verName:
+        raise ValueError('verName required for non-HEVC')
+    seg = _seg_suffix(seg_idx if is_clip else None, padded=False)
+    if ctx.out_name_templates and encode_type in ctx.out_name_templates:
+        custom_name = ctx.out_name_templates[encode_type].format(base_in_name)
+        if not custom_name.lower().endswith('.mp4'):
+            custom_name += '.mp4'
+        if is_clip:
+            custom_name = custom_name[:-4] + f'{seg}.mp4'
+        output_mp4 = os.path.join(source_dir, custom_name)
+    else:
+        output_mp4 = f"{source_noext}{seg}.{verName}.mp4"
+    mute_stem = f"{source_noext}{seg}.mute.{verName}"
+    mute_x264 = f"{mute_stem}.mp4"
+    mux_cmd = [ctx.mp4box_path, '-add', mute_x264, '-add', audio_file, '-new', output_mp4]
+    if chap and not is_clip:
+        mux_cmd = mux_cmd[:-2] + ['-chap', source_noext + '.txt'] + mux_cmd[-2:]
+    return EncodePlan(
+        encode_type=encode_type,
+        video=video_clip,
+        encode_cmd=ctx.param_x264.format(ctx.x264_path, mute_stem),
+        mux_cmd=mux_cmd,
+        output=output_mp4,
+        mute_video=mute_x264,
+        subtitle=f"{source_noext}.{verName}.ass",
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class EncodeContext:
     """Frozen snapshot of all encodeProcess parameters after validation.
@@ -418,115 +533,6 @@ def encodeProcess(
         param_x265=param_x265,
     )
 
-    # 音频切割
-    def cut_audio(src_audio, out_audio, start_sec, end_sec, is_lossless, ffmpeg_path, qaac_path, log_fh=None):
-        if is_lossless:
-            cmd = [ffmpeg_path, '-y', '-i', src_audio, '-ss', str(start_sec), '-to', str(end_sec), '-vn', '-acodec', 'flac', out_audio]
-            _log_run(cmd, log_fh, check=True)
-            return
-        # AAC via ffmpeg-decode -> qaac-encode pipe.
-        # CAVEAT: AAC carries ~21 ms of encoder priming plus trailing padding
-        # per encoded segment. Re-stitching segments produces audible seams.
-        # Clip mode being HEVC-only is not designed to avoid this, but to
-        # avoid sub rendering across the cut.
-        _ffmpeg_to_qaac(
-            ['-ss', str(start_sec), '-to', str(end_sec), '-i', src_audio],
-            out_audio, ffmpeg_path, qaac_path, log_fh,
-        )
-
-    # 参数生成
-    def build_encode_params(
-        ctx, encode_type, video_clip, audio_file, source, source_dir, base_in_name,
-        chap, font_out_dir, verName=None, is_clip=False, seg_idx=None,
-    ):
-        source_noext = source.removesuffix(ctx.extSource)
-        if encode_type == 'HEVC':
-            seg = _seg_suffix(seg_idx if is_clip else None, padded=True)
-            mute_video = f"{source_noext}{seg}.mute"
-            if ctx.out_name_templates and encode_type in ctx.out_name_templates:
-                custom_name = ctx.out_name_templates[encode_type].format(base_in_name)
-                if not custom_name.lower().endswith('.mkv'):
-                    custom_name += '.mkv'
-                if is_clip:
-                    custom_name = custom_name[:-4] + f'{seg}.mkv'
-                output_mkv = os.path.join(source_dir, custom_name)
-            else:
-                output_mkv = f"{source_noext}{seg}.hevc.mkv"
-            mux_cmd = [ctx.mkvmerge_path, '--output', output_mkv]
-            if ctx.video_title:
-                mux_cmd.extend(['--title', ctx.video_title.format(base_in_name)])
-            mute_hevc = f"{mute_video}.mp4"
-            mux_cmd.extend([
-                '--language', '0:und', '--default-track', '0:yes',
-                mute_hevc, '--language', f'0:{ctx.audio_language}', '--default-track',
-                '0:yes', audio_file
-            ])
-            # 字幕和字体（仅非分段）
-            if ctx.subtitles_info and not is_clip:
-                for sub_cfg in ctx.subtitles_info:
-                    sub_verName = SUB_TYPE_TO_VERNAME[sub_cfg.get("type")]
-                    sub_file_path = source_noext + f'.{sub_verName}.ass'
-                    mux_cmd.extend([
-                        "--language",
-                        f"0:{sub_cfg.get('language', 'chi')}",
-                        "--track-name",
-                        f"0:{sub_cfg.get('track_name', '')}",
-                        "--default-track",
-                        f"0:{'yes' if sub_cfg.get('is_default', False) else 'no'}",
-                        sub_file_path
-                    ])
-                if font_out_dir and os.path.isdir(font_out_dir):
-                    for filename in os.listdir(font_out_dir):
-                        font_path = os.path.join(font_out_dir, filename)
-                        if os.path.isfile(font_path):
-                            _, ext_font = os.path.splitext(filename)
-                            if ext_font.lower() in FONT_EXTS:
-                                mux_cmd.extend([
-                                    "--attachment-mime-type",
-                                    getMimeType(ext_font),
-                                    "--attach-file", font_path
-                                ])
-            # 章节（仅非分段）
-            if chap and not is_clip:
-                mux_cmd.extend([
-                    '--chapter-language', 'en', '--chapters',
-                    source_noext + '.txt'
-                ])
-            return EncodePlan(
-                encode_type=encode_type,
-                video=video_clip,
-                encode_cmd=ctx.param_x265.format(ctx.x265_path, mute_video),
-                mux_cmd=mux_cmd,
-                output=output_mkv,
-                mute_video=mute_hevc,
-            )
-        if not verName:
-            raise ValueError('verName required for non-HEVC')
-        seg = _seg_suffix(seg_idx if is_clip else None, padded=False)
-        if ctx.out_name_templates and encode_type in ctx.out_name_templates:
-            custom_name = ctx.out_name_templates[encode_type].format(base_in_name)
-            if not custom_name.lower().endswith('.mp4'):
-                custom_name += '.mp4'
-            if is_clip:
-                custom_name = custom_name[:-4] + f'{seg}.mp4'
-            output_mp4 = os.path.join(source_dir, custom_name)
-        else:
-            output_mp4 = f"{source_noext}{seg}.{verName}.mp4"
-        mute_stem = f"{source_noext}{seg}.mute.{verName}"
-        mute_x264 = f"{mute_stem}.mp4"
-        mux_cmd = [ctx.mp4box_path, '-add', mute_x264, '-add', audio_file, '-new', output_mp4]
-        if chap and not is_clip:
-            mux_cmd = mux_cmd[:-2] + ['-chap', source_noext + '.txt'] + mux_cmd[-2:]
-        return EncodePlan(
-            encode_type=encode_type,
-            video=video_clip,
-            encode_cmd=ctx.param_x264.format(ctx.x264_path, mute_stem),
-            mux_cmd=mux_cmd,
-            output=output_mp4,
-            mute_video=mute_x264,
-            subtitle=f"{source_noext}.{verName}.ass",
-        )
-
     def decorator(func):
         def wrapper(*args, **kw):
             chap = chapter
@@ -626,7 +632,7 @@ def encodeProcess(
                     if is_clip:
                         is_lossless = (sourceType == 'BD' and encode_type == 'HEVC')
                         seg_audio = f"{source.removesuffix(extSource)}{_seg_suffix(seg_idx, padded=True)}{'.flac' if is_lossless else '.m4a'}"
-                        cut_audio(src_audio_file, seg_audio, astart, aend, is_lossless, ffmpeg_path, qaac_path, log_fh)
+                        _cut_audio(ctx, src_audio_file, seg_audio, astart, aend, is_lossless, log_fh)
                         file2del.append(seg_audio)
                         audio_file = seg_audio
                         video_clip = last[start:end].fmtc.bitdepth(bits=10, dmode=8, patsize=64)
@@ -642,7 +648,7 @@ def encodeProcess(
                             if not os.path.isfile(ass_path):
                                 raise FileNotFoundError(f'Your subtitle files are not ready yet!\nMissing {ass_path}')
                             video_clip = sub(last2, ass_path)
-                    plan = build_encode_params(
+                    plan = _build_encode_plan(
                         ctx, encode_type, video_clip, audio_file, source, source_dir, base_in_name,
                         chap=chap, font_out_dir=resolved_font_out_dir, verName=verName,
                         is_clip=is_clip, seg_idx=seg_idx,
