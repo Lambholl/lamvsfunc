@@ -411,7 +411,8 @@ def encodeProcess(
             source = args[0]
             if not source.endswith(extSource):
                 raise FileNotFoundError(f'Source file extention doesn\'t match. It should have been {extSource}')
-            if chapter:
+            _chapter = kw.get('chapter', chapter)
+            if _chapter:
                 chapter_txt = source[:-len(extSource)] + '.txt'
                 if not os.path.exists(chapter_txt):
                     raise FileNotFoundError(f'chapter=True but chapter file not found: {chapter_txt}')
@@ -582,7 +583,7 @@ def encodeProcess(
                         params = build_encode_params(
                             encode_type, video_clip, audio_path, source, extSource, base_in_name, source_dir,
                             out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-                            chapter, subtitles_info, resolved_font_out_dir, video_title
+                            _chapter, subtitles_info, resolved_font_out_dir, video_title
                         )
                     else:
                         verName = {'CHS': 'sc', 'CHT': 'tc', 'JPSC': 'jpsc', 'JPTC': 'jptc'}[encode_type]
@@ -592,7 +593,7 @@ def encodeProcess(
                         params = build_encode_params(
                             encode_type, video_clip, audio_path, source, extSource, base_in_name, source_dir,
                             out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-                            chapter, subtitles_info, resolved_font_out_dir, video_title, verName
+                            _chapter, subtitles_info, resolved_font_out_dir, video_title, verName
                         )
                     encodeParamsList.append(params)
             # 编码与封装
