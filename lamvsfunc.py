@@ -1,6 +1,6 @@
 import vapoursynth as vs
 from vapoursynth import core
-import dual_out, subprocess, os, gc, sys, threading, re
+import dual_out, subprocess, os, gc, sys, threading, re, warnings
 '''
 Functions:
 getSources
@@ -250,8 +250,8 @@ def encodeProcess(
             if sub_cfg.get('type') not in KNOWN_SUB_TYPES:
                 raise ValueError(f"subtitles_info[{i}]['type']={sub_cfg.get('type')!r}; expected one of {sorted(KNOWN_SUB_TYPES)}")
     if clip_frames is not None:
-        if not isinstance(clip_frames, list) or any(not isinstance(f, int) or f <= 0 for f in clip_frames):
-            raise ValueError('clip_frames must be a list of positive ints')
+        if not isinstance(clip_frames, list) or any(not isinstance(f, int) or f < 0 for f in clip_frames):
+            raise ValueError('clip_frames must be a list of natural ints')
         if any(clip_frames[i] >= clip_frames[i+1] for i in range(len(clip_frames)-1)):
             raise ValueError('clip_frames must be strictly increasing')
 
@@ -315,16 +315,16 @@ def encodeProcess(
     ):
         params = {}
         if encode_type == 'HEVC':
-            mute_video = f"{source[:-len(extSource)]}{f'.seg{seg_idx}' if is_clip else ''}.mute"
+            mute_video = f"{source[:-len(extSource)]}{f'.seg{seg_idx:0>2}' if is_clip else ''}.mute"
             if (out_name_templates) and (encode_type in out_name_templates):
                 custom_name = out_name_templates[encode_type].format(base_in_name)
                 if not custom_name.lower().endswith('.mkv'):
                     custom_name += '.mkv'
                 if is_clip:
-                    custom_name = custom_name[:-4] + f'.seg{seg_idx}.mkv'
+                    custom_name = custom_name[:-4] + f'.seg{seg_idx:0>2}.mkv'
                 output_mkv = os.path.join(source_dir, custom_name)
             else:
-                output_mkv = f"{source[:-len(extSource)]}{f'.seg{seg_idx}' if is_clip else ''}.hevc.mkv"
+                output_mkv = f"{source[:-len(extSource)]}{f'.seg{seg_idx:0>2}' if is_clip else ''}.hevc.mkv"
             mux_cmd = [mkvmerge_path, '--output', output_mkv]
             if video_title:
                 mux_cmd.extend(['--title',  video_title.format(base_in_name)])
@@ -414,7 +414,8 @@ def encodeProcess(
             if chapter:
                 chapter_txt = source[:-len(extSource)] + '.txt'
                 if not os.path.exists(chapter_txt):
-                    raise FileNotFoundError(f'chapter=True but chapter file not found: {chapter_txt}')
+                    warnings.warn(f'chapter=True but chapter file not found: {chapter_txt}')
+                    chapter = False
             source_dir = os.path.dirname(source) or '.'
             base_in_name = os.path.basename(source)[:-len(extSource)]
             resolved_fonts_dir = fonts_dir if fonts_dir else os.path.join(source_dir, 'fonts')
@@ -513,7 +514,7 @@ def encodeProcess(
                     # 生成本段参数并切音频
                     for encode_type in encodeTypes:
                         is_lossless = (sourceType == 'BD' and encode_type == 'HEVC')
-                        seg_audio = f"{source[:-len(extSource)]}.seg{seg_idx}{'.flac' if is_lossless else '.m4a'}"
+                        seg_audio = f"{source[:-len(extSource)]}.seg{seg_idx:0>2}{'.flac' if is_lossless else '.m4a'}"
                         cut_audio(src_audio_file, seg_audio, astart, aend, is_lossless, ffmpeg_path, qaac_path, log_fh)
                         file2del.append(seg_audio)
                         video_clip = last[start:end].fmtc.bitdepth(bits=10, dmode=8, patsize=64)
