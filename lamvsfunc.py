@@ -488,7 +488,8 @@ def encodeProcess(
                     return flac_audio
                 return m4a_audio
             last: vs.VideoNode = func(*args, **kw)
-            last2 = down8d(last)
+            needs_last2 = any(t != 'HEVC' for t in encodeTypes)
+            last2 = down8d(last) if needs_last2 else None
             encodeParamsList = []
             # 分段处理：按分段顺序执行（每段内部仍并行多编码器）
             if clip_frames:
