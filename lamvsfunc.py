@@ -404,6 +404,7 @@ def encodeProcess(
 
     def decorator(func):
         def wrapper(*args, **kw):
+            chap = chapter
             log_fh = open(log_file, 'a', encoding='utf-8', buffering=1) if log_file else None
             _saved_stdout = sys.stdout
             if log_fh:
@@ -411,11 +412,10 @@ def encodeProcess(
             source = args[0]
             if not source.endswith(extSource):
                 raise FileNotFoundError(f'Source file extention doesn\'t match. It should have been {extSource}')
-            if chapter:
+            if chap:
                 chapter_txt = source[:-len(extSource)] + '.txt'
                 if not os.path.exists(chapter_txt):
-                    warnings.warn(f'chapter=True but chapter file not found: {chapter_txt}')
-                    chapter = False
+                    raise FileNotFoundError(f'chapter=True but chapter file not found: {chapter_txt}')
             source_dir = os.path.dirname(source) or '.'
             base_in_name = os.path.basename(source)[:-len(extSource)]
             resolved_fonts_dir = fonts_dir if fonts_dir else os.path.join(source_dir, 'fonts')
@@ -583,7 +583,7 @@ def encodeProcess(
                         params = build_encode_params(
                             encode_type, video_clip, audio_path, source, extSource, base_in_name, source_dir,
                             out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-                            chapter, subtitles_info, resolved_font_out_dir, video_title
+                            chap, subtitles_info, resolved_font_out_dir, video_title
                         )
                     else:
                         verName = {'CHS': 'sc', 'CHT': 'tc', 'JPSC': 'jpsc', 'JPTC': 'jptc'}[encode_type]
@@ -593,7 +593,7 @@ def encodeProcess(
                         params = build_encode_params(
                             encode_type, video_clip, audio_path, source, extSource, base_in_name, source_dir,
                             out_name_templates, x264_path, x265_path, mp4box_path, mkvmerge_path, param_x264, param_x265,
-                            chapter, subtitles_info, resolved_font_out_dir, video_title, verName
+                            chap, subtitles_info, resolved_font_out_dir, video_title, verName
                         )
                     encodeParamsList.append(params)
             # 编码与封装

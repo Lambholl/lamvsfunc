@@ -1,21 +1,25 @@
-﻿"""Case 31: log_file captures both Python and subprocess output."""
+"""Case 24: Web + HEVC + clip_frames.
+
+The only case that exercises cut_audio's AAC (lossy) branch:
+per-segment ffmpeg-decode -> qaac-encode pipe. BD clip cuts flac via
+ffmpeg directly, which never touches that code path.
+"""
 import os, sys
 sys.path.insert(0, os.path.dirname(__file__))
 from case_lib import prepare
 
-TMP = prepare("31", ["sample.m2ts"], trim_seconds=15)
-SOURCE = str(TMP / "sample.m2ts")
-LOG = str(TMP / "case31.log")
+TMP = prepare("24", ["sample.mkv"], trim_seconds=15)
+SOURCE = str(TMP / "sample.mkv")
 
 from vsenv import *
 import lamvsfunc as lamvs
 
 @lamvs.encodeProcess(
-    sourceType='BD',
+    sourceType='Web',
     encodeTypes=['HEVC'],
-    chapter=False,
+    clip_frames=[80, 160],
     rpc=True,
-    log_file=LOG,
+    log_file=str(TMP / 'run.log'),
     param_x265='"{0}" --y4m -D 10 --preset veryfast --crf 23 -o "{1}.mp4" -',
 )
 def encode(source=''):

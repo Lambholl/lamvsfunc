@@ -3,7 +3,7 @@ import os, sys
 sys.path.insert(0, os.path.dirname(__file__))
 from case_lib import prepare
 
-TMP = prepare("10", ["sample.mkv"])
+TMP = prepare("10", ["sample.mkv"], trim_seconds=10)
 SOURCE = str(TMP / "sample.mkv")
 
 from vsenv import *

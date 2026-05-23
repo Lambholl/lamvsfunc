@@ -9,12 +9,14 @@ cut, and the seg-aware rpChecker call.
 ## Prerequisites
 
 - Tools on PATH: `eac3to`, `mkvmerge`, `x265`, `ffmpeg`.
-- Fixture: `sample.m2ts` with **>= 1200 frames** (so the cut produces
-  at least three segments: [0,600), [600,1200), [1200, end)).
+- Fixture: `sample.m2ts`. The case trims to 15 s before running, so any
+  m2ts that already meets `fixtures.md` requirements works. The cut at
+  `[80, 160]` produces three segments: `[0,80)`, `[80,160)`, `[160, end]`.
 
 ## Setup
 
-Automatic. The script calls `case_lib.prepare("20", ["sample.m2ts"])`.
+Automatic. The script calls
+`case_lib.prepare("20", ["sample.m2ts"], trim_seconds=15)`.
 
 ## Execute
 
@@ -25,13 +27,13 @@ Automatic. The script calls `case_lib.prepare("20", ["sample.m2ts"])`.
 ## Verify
 
 - Exit code: `0`.
-- Three segment outputs exist:
-  - `tests\.tmp\20\sample.seg0.hevc.mkv`
-  - `tests\.tmp\20\sample.seg1.hevc.mkv`
-  - `tests\.tmp\20\sample.seg2.hevc.mkv`
+- Three segment outputs exist (HEVC clip names are zero-padded width 2):
+  - `tests\.tmp\20\sample.seg00.hevc.mkv`
+  - `tests\.tmp\20\sample.seg01.hevc.mkv`
+  - `tests\.tmp\20\sample.seg02.hevc.mkv`
 - Each is 2 tracks (HEVC + FLAC), no attachments, no chapters.
   ```powershell
-  foreach ($i in 0,1,2) {
+  foreach ($i in '00','01','02') {
       python tests\scripts\verify_mkv.py "tests\.tmp\20\sample.seg$i.hevc.mkv" `
           tracks.length attachments.length chapters.length
   }
