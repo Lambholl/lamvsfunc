@@ -215,7 +215,7 @@ class EncodeContext:
 def _validate_source_path(ctx, source, chap):
     """Reject obviously-wrong source paths before any heavy work runs."""
     if not source.endswith(ctx.extSource):
-        raise FileNotFoundError(f"Source file extention doesn't match. It should have been {ctx.extSource}")
+        raise FileNotFoundError(f"Source file extension doesn't match {ctx.extSource}: {source}")
     if chap:
         chapter_txt = source.removesuffix(ctx.extSource) + '.txt'
         if not os.path.exists(chapter_txt):
@@ -421,11 +421,11 @@ def _torrent_plans(ctx, plans):
 
 
 def _run_pipeline(ctx, source, last, last2, log_fh):
-    """End-to-end encode for one source path: validate, subset fonts,
-    extract audio, plan segments, then encode/mux/rpc/torrent each
-    segment. Cleans up intermediate files at the end if ctx.delFiles."""
+    """End-to-end encode for one source path: subset fonts, extract
+    audio, plan segments, then encode/mux/rpc/torrent each segment.
+    Cleans up intermediate files at the end if ctx.delFiles. Assumes
+    the caller (wrapper) has already validated the source path."""
     chap = ctx.chapter
-    _validate_source_path(ctx, source, chap)
     source_dir = os.path.dirname(source) or '.'
     base_in_name = os.path.basename(source).removesuffix(ctx.extSource)
     resolved_font_out_dir = _subset_fonts_if_needed(ctx, source, source_dir, log_fh)
@@ -554,12 +554,16 @@ def _ffmpeg_to_qaac(ffmpeg_input_args, out_audio, ffmpeg_path, qaac_path, log_fh
     ffmpeg_input_args is everything between the ffmpeg binary and the
     trailing '-vn -f wav -' (typically just ['-i', src], or ['-ss', s,
     '-to', e, '-i', src] for a slice). ffmpeg stderr is teed to the log
-    when log_fh is set so that codec banners and warnings still surface.
+    when log_fh is set so that codec banners and warnings still surface;
+    otherwise stderr is discarded — leaving it as PIPE without a reader
+    risks deadlocking on long inputs that fill the OS pipe buffer.
     Raises RuntimeError on non-zero exit from either process.
     """
     ffmpeg_cmd = [ffmpeg_path, '-y', *ffmpeg_input_args, '-vn', '-f', 'wav', '-']
     ffmpeg_proc = subprocess.Popen(
-        ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        ffmpeg_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE if log_fh else subprocess.DEVNULL,
     )
     qaac_proc = _log_popen(
         [qaac_path, '-V', '127', '-', '-o', out_audio],
@@ -574,7 +578,6 @@ def _ffmpeg_to_qaac(ffmpeg_input_args, out_audio, ffmpeg_path, qaac_path, log_fh
             daemon=True,
         )
         stderr_tee.start()
-    if log_fh:
         qaac_proc.wait()
     else:
         qaac_proc.communicate()
@@ -743,14 +746,14 @@ def encodeProcess(
     ctx = EncodeContext(
         sourceType=sourceType,
         extSource=extSource,
-        encodeTypes=encodeTypes,
+        encodeTypes=tuple(encodeTypes),
         sub=sub,
         chapter=chapter,
         delFiles=delFiles,
         rpc=rpc,
         fonts_dir=fonts_dir,
         font_out_dir=font_out_dir,
-        subtitles_info=subtitles_info,
+        subtitles_info=tuple(subtitles_info) if subtitles_info else None,
         video_title=video_title,
         assfontsubset_path=assfontsubset_path,
         out_name_templates=out_name_templates,
@@ -764,7 +767,7 @@ def encodeProcess(
         mktorrent_path=mktorrent_path,
         clip_frames=clip_frames,
         create_torrent=create_torrent,
-        trackers=trackers,
+        trackers=tuple(trackers) if trackers else None,
         log_file=log_file,
         audio_language=audio_language,
         bd_audio_track=bd_audio_track,
@@ -905,7 +908,7 @@ def makeTorrent(mktorrent_path,
     if is_private:
         cmd.append("-p")
 
-    if trackers_list and isinstance(trackers_list, list):
+    if trackers_list and isinstance(trackers_list, (list, tuple)):
         cmd.extend(["-a", ",".join(trackers_list)])
     else:
         print(

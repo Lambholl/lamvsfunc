@@ -18,7 +18,7 @@ reused by all three encoders (qaac never runs).
 ## Setup
 
 Automatic. The script calls
-`case_lib.prepare("21", ["sample.mkv", "sample.sc.ass", "sample.tc.ass", "sample.txt", "fonts"])`.
+`case_lib.prepare("21", ["sample.mkv", "sample.sc.ass", "sample.tc.ass", "sample.txt", "fonts"], trim_seconds=15)`.
 
 ## Execute
 

@@ -15,7 +15,7 @@ the Web audio extraction (ffmpeg `-c:a copy` into m4a, no qaac).
 ## Setup
 
 Automatic. The script calls
-`case_lib.prepare("17", ["sample.mkv", "sample.sc.ass", "sample.tc.ass", "sample.txt", "fonts"])`.
+`case_lib.prepare("17", ["sample.mkv", "sample.sc.ass", "sample.tc.ass", "sample.txt", "fonts"], trim_seconds=15)`.
 
 ## Execute
 

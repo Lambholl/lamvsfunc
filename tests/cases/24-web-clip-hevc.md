@@ -6,9 +6,9 @@ Web + HEVC with clip_frames produces multiple segment outputs plus
 per-segment rpc reports. Web counterpart of case 20.
 
 **Unique coverage**: this is the only case in the suite that exercises
-`cut_audio`'s AAC (lossy) branch — the per-segment ffmpeg-decode →
-qaac-encode pipe at [lamvsfunc.py:287-308](../../lamvsfunc.py). BD clip
-cuts flac via ffmpeg directly, so that pipeline is otherwise untested.
+the AAC (lossy) branch of `_cut_audio` — the per-segment ffmpeg-decode
+→ qaac-encode pipe in `_ffmpeg_to_qaac`. BD clip cuts flac via ffmpeg
+directly, so that pipeline is otherwise untested.
 Note that per-segment AAC re-encode adds ~21 ms of priming/padding per
 seam, so reassembling segments is not bit-exact — the test only checks
 that segments are produced and rpc passes per segment.
@@ -21,7 +21,7 @@ that segments are produced and rpc passes per segment.
 
 ## Setup
 
-Automatic. The script calls `case_lib.prepare("24", ["sample.mkv"])`.
+Automatic. The script calls `case_lib.prepare("24", ["sample.mkv"], trim_seconds=15)`.
 
 ## Execute
 
